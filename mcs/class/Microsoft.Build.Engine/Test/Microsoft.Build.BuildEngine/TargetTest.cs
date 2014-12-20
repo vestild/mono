@@ -35,6 +35,7 @@ using MonoTests.Microsoft.Build.Tasks;
 using NUnit.Framework;
 using System.IO;
 using System.Xml;
+using System.Text;
 
 namespace MonoTests.Microsoft.Build.BuildEngine {
 	[TestFixture]
@@ -350,18 +351,20 @@ namespace MonoTests.Microsoft.Build.BuildEngine {
 		}
 
 #if NET_3_5
+#if NET_4_0
+
 		bool Build (string projectXml, ILogger logger)
 		{
 			if (Environment.OSVersion.Platform == PlatformID.Win32NT) {
 				var reader = new StringReader (projectXml);
 				var xml = XmlReader.Create (reader);
-				return BuildOnWindows (xml, logger);
+				return BuildUsingReflection (xml, logger);
 			} else {
-				return BuildOnLinux (projectXml, logger);
+				return BuildDirect (projectXml, logger);
 			}
 		}
 
-		bool BuildOnWindows (XmlReader reader, ILogger logger)
+		bool BuildUsingReflection (XmlReader reader, ILogger logger)
 		{
 			var type = Type.GetType ("Microsoft.Build.Evaluation.ProjectCollection, Microsoft.Build, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a");
 
@@ -377,7 +380,14 @@ namespace MonoTests.Microsoft.Build.BuildEngine {
 			return ret;
 		}
 
-		bool BuildOnLinux (string projectXml, ILogger logger)
+#else
+		bool Build (string projectXml, ILogger logger)
+		{
+			return BuildDirect (projectXml, logger);
+		}
+#endif
+
+		bool BuildDirect (string projectXml, ILogger logger)
 		{
 			var engine = new Engine (Consts.BinPath);
 			var project = engine.CreateNewProject ();
@@ -394,8 +404,9 @@ namespace MonoTests.Microsoft.Build.BuildEngine {
 			var result = Build (projectXml, logger);
 
 			if (!result) {
-				logger.DumpMessages ();
-				Assert.Fail ("Build failed");
+var sb = new StringBuilder();
+				logger.DumpMessages (sb);
+				Assert.Fail ("Build failed:\n" + sb);
 			}
 
 			return logger;
@@ -434,7 +445,7 @@ namespace MonoTests.Microsoft.Build.BuildEngine {
 		public void BuildProjectWithItemGroupInsideTarget ()
 		{
 			ItemGroupInsideTarget (
-				@"<Project ToolsVersion=""4.0"" xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"">
+				@"<Project xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"">
 					<ItemGroup>
 					<fruit Include=""apple""/>
 						<fruit Include=""apricot""/>
@@ -453,7 +464,7 @@ namespace MonoTests.Microsoft.Build.BuildEngine {
 		public void BuildProjectWithItemGroupInsideTarget2 ()
 		{
 			ItemGroupInsideTarget (
-				@"<Project xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"" ToolsVersion=""4.0"">
+				@"<Project xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"">
 					<ItemGroup>
 						<A Include='1'>
 							<Sub>Foo</Sub>
@@ -480,7 +491,7 @@ namespace MonoTests.Microsoft.Build.BuildEngine {
 		public void BuildProjectWithPropertyGroupInsideTarget ()
 		{
 			ItemGroupInsideTarget (
-				@"<Project ToolsVersion=""4.0"" xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"">
+				@"<Project xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"">
 					<PropertyGroup>
 						<A>Foo</A>
 						<B>Bar</B>
@@ -500,7 +511,7 @@ namespace MonoTests.Microsoft.Build.BuildEngine {
 		public void BuildProjectWithPropertyGroupInsideTarget2 ()
 		{
 			ItemGroupInsideTarget (
-				@"<Project ToolsVersion=""4.0"" xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"">
+				@"<Project xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"">
 					<PropertyGroup>
 						<A>Foo</A>
 						<B>Bar</B>
@@ -528,7 +539,7 @@ namespace MonoTests.Microsoft.Build.BuildEngine {
 		public void ItemGroupInsideTarget_ModifyMetadata ()
 		{
 			ItemGroupInsideTarget (
-				@"<Project ToolsVersion=""4.0"" xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"">
+				@"<Project xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"">
 					<ItemGroup>
 						<Server Include='Server1'>
 							<AdminContact>Mono</AdminContact>
@@ -557,7 +568,7 @@ namespace MonoTests.Microsoft.Build.BuildEngine {
 		public void ItemGroupInsideTarget_RemoveItem ()
 		{
 			ItemGroupInsideTarget (
-				@"<Project ToolsVersion=""4.0"" xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"">
+				@"<Project xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"">
 					<ItemGroup>
 						<Foo Include='A;B;C;D' />
 					</ItemGroup>
@@ -572,11 +583,12 @@ namespace MonoTests.Microsoft.Build.BuildEngine {
 				</Project>", "A;C;D");
 		}
 
+#if NET_4_5
 		[Test]
 		public void ItemGroupInsideTarget_DontKeepDuplicates ()
 		{
 			ItemGroupInsideTarget (
-				@"<Project ToolsVersion=""4.0"" xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"">
+				@"<Project xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"">
 					<ItemGroup>
 						<Foo Include='A;B' />
 						<Foo Include='C'>
@@ -603,7 +615,7 @@ namespace MonoTests.Microsoft.Build.BuildEngine {
 		public void ItemGroupInsideTarget_RemoveMetadata ()
 		{
 			ItemGroupInsideTarget (
-				@"<Project ToolsVersion=""4.0"" xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"">
+				@"<Project xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"">
 					<ItemGroup>
 						<Foo Include='A' />
 						<Foo Include='B'>
@@ -637,7 +649,7 @@ namespace MonoTests.Microsoft.Build.BuildEngine {
 		public void ItemGroupInsideTarget_RemoveMetadata2 ()
 		{
 			ItemGroupInsideTarget (
-				@"<Project ToolsVersion=""4.0"" xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"">
+				@"<Project xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"">
 					<ItemGroup>
 						<Foo Include='A' />
 						<Foo Include='B'>
@@ -671,7 +683,7 @@ namespace MonoTests.Microsoft.Build.BuildEngine {
 		public void ItemGroupInsideTarget_KeepMetadata ()
 		{
 			ItemGroupInsideTarget (
-				@"<Project ToolsVersion=""4.0"" xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"">
+				@"<Project xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"">
 					<ItemGroup>
 						<Foo Include='A' />
 						<Foo Include='B'>
@@ -697,12 +709,13 @@ namespace MonoTests.Microsoft.Build.BuildEngine {
 					</Target>
 				</Project>", "D");
 		}
+#endif
 
 		[Test]
 		public void ItemGroupInsideTarget_Batching ()
 		{
 			ItemGroupInsideTarget (
-				@"<Project ToolsVersion=""4.0"" xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"">
+				@"<Project xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"">
 					<Target Name='Main'>
 						<ItemGroup>
 							<Foo Include='A;B' />
@@ -717,7 +730,7 @@ namespace MonoTests.Microsoft.Build.BuildEngine {
 		public void ItemGroupInsideTarget_Condition ()
 		{
 			ItemGroupInsideTarget (
-				@"<Project xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"" ToolsVersion=""4.0"">
+				@"<Project xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"">
 					<PropertyGroup>
 						<Summer>true</Summer>
 					</PropertyGroup>
@@ -738,7 +751,7 @@ namespace MonoTests.Microsoft.Build.BuildEngine {
 		public void PropertyGroupInsideTarget_Condition ()
 		{
 			ItemGroupInsideTarget (
-				@"<Project xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"" ToolsVersion=""4.0"">
+				@"<Project xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"">
 					<ItemGroup>
 						<Shells Include=""/bin/sh;/bin/bash;/bin/false"" />
 					</ItemGroup>
@@ -761,7 +774,7 @@ namespace MonoTests.Microsoft.Build.BuildEngine {
 		public void ItemGroupInsideTarget_Expression_in_Metadata ()
 		{
 			ItemGroupInsideTarget (
-			@"<Project xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"" ToolsVersion=""4.0"">
+			@"<Project xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"">
 				<ItemGroup>
 					<Foo Include='output1'>
 						<Inputs>input1a;input1b</Inputs>
@@ -786,7 +799,7 @@ namespace MonoTests.Microsoft.Build.BuildEngine {
 			3, "COMPILE: input1a;input1b - output1", "COMPILE: input2a;input2b - output2");
 		}
 
-		#endif
+#endif
 
 		[Test]
 		public void TestTargetOutputsIncludingMetadata ()
@@ -915,7 +928,7 @@ namespace MonoTests.Microsoft.Build.BuildEngine {
 			Engine engine;
 			Project project;
 
-			string projectString = @"<Project xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"" ToolsVersion=""4.0"">
+			string projectString = @"<Project xmlns=""http://schemas.microsoft.com/developer/msbuild/2003"">
 			  <Target Name=""DefaultBeforeTarget1"" BeforeTargets=""Default"">
 			    <Message Text=""Hello from DefaultBeforeTarget1""/>
 			  </Target>
@@ -962,7 +975,6 @@ namespace MonoTests.Microsoft.Build.BuildEngine {
 			//warnings for referencing unknown targets: NonExistant and Foo
 			Assert.AreEqual (2, logger.WarningsCount, "Expected warnings not raised");
 		}
-#endif
 
 		[Test]
 		public void TestTargetReturns ()
@@ -984,6 +996,7 @@ namespace MonoTests.Microsoft.Build.BuildEngine {
 
 			Assert.AreEqual (0, logger.NormalMessageCount, "Unexpected extra messages found");
 		}
+#endif
 
 	}
 }
