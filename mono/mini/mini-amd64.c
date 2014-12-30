@@ -2017,7 +2017,7 @@ mono_arch_create_vars (MonoCompile *cfg)
 		}
 	}
 
-	if (cfg->gen_seq_points) {
+	if (cfg->gen_seq_points_debug_data) {
 		MonoInst *ins;
 
 		if (cfg->compile_aot) {
@@ -6933,6 +6933,11 @@ mono_arch_emit_prolog (MonoCompile *cfg)
 		for (i = 0; next && i < sig->param_count + sig->hasthis; ++i) {
 			ArgInfo *ainfo = cinfo->args + i;
 			gboolean match = FALSE;
+
+			while (next && next->opcode == OP_IL_SEQ_POINT)
+				next = next->next;
+			if (!next)
+				break;
 			
 			ins = cfg->args [i];
 			if (ins->opcode != OP_REGVAR) {
@@ -6978,7 +6983,7 @@ mono_arch_emit_prolog (MonoCompile *cfg)
 		}
 	}
 
-	if (cfg->gen_seq_points) {
+	if (cfg->gen_seq_points_debug_data) {
 		MonoInst *info_var = cfg->arch.seq_point_info_var;
 
 		/* Initialize seq_point_info_var */
@@ -7763,6 +7768,7 @@ get_delegate_invoke_impl (gboolean has_target, guint32 param_count, guint32 *cod
 		if (!has_target)
 			g_free (buff);
 	}
+	mono_profiler_code_buffer_new (start, code - start, MONO_PROFILER_CODE_BUFFER_DELEGATE_INVOKE, NULL);
 
 	return start;
 }
@@ -7870,6 +7876,7 @@ mono_arch_get_delegate_virtual_invoke_impl (MonoMethodSignature *sig, MonoMethod
 	/* Load the vtable */
 	amd64_mov_reg_membase (code, AMD64_RAX, AMD64_ARG_REG1, MONO_STRUCT_OFFSET (MonoObject, vtable), 8);
 	amd64_jump_membase (code, AMD64_RAX, offset);
+	mono_profiler_code_buffer_new (start, code - start, MONO_PROFILER_CODE_BUFFER_DELEGATE_INVOKE, NULL);
 
 	return start;
 }
@@ -8080,6 +8087,7 @@ mono_arch_build_imt_thunk (MonoVTable *vtable, MonoDomain *domain, MonoIMTCheckI
 	g_assert (code - start <= size);
 
 	nacl_domain_code_validate(domain, &start, size, &code);
+	mono_profiler_code_buffer_new (start, code - start, MONO_PROFILER_CODE_BUFFER_IMT_TRAMPOLINE, NULL);
 
 	return start;
 }

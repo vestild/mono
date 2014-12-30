@@ -299,7 +299,8 @@ namespace System.Globalization
 						//
 						if (parent_lcid == 0x7C04 && EnglishName [EnglishName.Length - 1] == 'y')
 							return parent_culture = new CultureInfo ("zh-Hant");
-
+						else if (parent_lcid == 0x0004 && EnglishName [EnglishName.Length -1] == 'y')
+							return parent_culture = new CultureInfo ("zh-Hans");
 						return null;
 					}
 					
@@ -377,6 +378,7 @@ namespace System.Globalization
 
 			RegionInfo.ClearCachedData ();
 			TimeZone.ClearCachedData ();
+			DateTime.ClearCachedData ();
 #if NET_4_5
 			TimeZoneInfo.ClearCachedData ();
 #endif

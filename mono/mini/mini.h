@@ -432,7 +432,7 @@ enum {
 
 /* FIXME: Add more instructions */
 /* INEG sets the condition codes, and the OP_LNEG decomposition depends on this on x86 */
-#define MONO_INS_HAS_NO_SIDE_EFFECT(ins) (MONO_IS_MOVE (ins) || (ins->opcode == OP_ICONST) || (ins->opcode == OP_I8CONST) || MONO_IS_ZERO (ins) || (ins->opcode == OP_ADD_IMM) || (ins->opcode == OP_R8CONST) || (ins->opcode == OP_LADD_IMM) || (ins->opcode == OP_ISUB_IMM) || (ins->opcode == OP_IADD_IMM) || (ins->opcode == OP_LNEG) || (ins->opcode == OP_ISUB) || (ins->opcode == OP_CMOV_IGE) || (ins->opcode == OP_ISHL_IMM) || (ins->opcode == OP_ISHR_IMM) || (ins->opcode == OP_ISHR_UN_IMM) || (ins->opcode == OP_IAND_IMM) || (ins->opcode == OP_ICONV_TO_U1) || (ins->opcode == OP_ICONV_TO_I1) || (ins->opcode == OP_SEXT_I4) || (ins->opcode == OP_LCONV_TO_U1) || (ins->opcode == OP_ICONV_TO_U2) || (ins->opcode == OP_ICONV_TO_I2) || (ins->opcode == OP_LCONV_TO_I2) || (ins->opcode == OP_LDADDR) || (ins->opcode == OP_PHI) || (ins->opcode == OP_NOP) || (ins->opcode == OP_ZEXT_I4) || (ins->opcode == OP_NOT_NULL))
+#define MONO_INS_HAS_NO_SIDE_EFFECT(ins) (MONO_IS_MOVE (ins) || (ins->opcode == OP_ICONST) || (ins->opcode == OP_I8CONST) || MONO_IS_ZERO (ins) || (ins->opcode == OP_ADD_IMM) || (ins->opcode == OP_R8CONST) || (ins->opcode == OP_LADD_IMM) || (ins->opcode == OP_ISUB_IMM) || (ins->opcode == OP_IADD_IMM) || (ins->opcode == OP_LNEG) || (ins->opcode == OP_ISUB) || (ins->opcode == OP_CMOV_IGE) || (ins->opcode == OP_ISHL_IMM) || (ins->opcode == OP_ISHR_IMM) || (ins->opcode == OP_ISHR_UN_IMM) || (ins->opcode == OP_IAND_IMM) || (ins->opcode == OP_ICONV_TO_U1) || (ins->opcode == OP_ICONV_TO_I1) || (ins->opcode == OP_SEXT_I4) || (ins->opcode == OP_LCONV_TO_U1) || (ins->opcode == OP_ICONV_TO_U2) || (ins->opcode == OP_ICONV_TO_I2) || (ins->opcode == OP_LCONV_TO_I2) || (ins->opcode == OP_LDADDR) || (ins->opcode == OP_PHI) || (ins->opcode == OP_NOP) || (ins->opcode == OP_ZEXT_I4) || (ins->opcode == OP_NOT_NULL) || (ins->opcode == OP_IL_SEQ_POINT))
 
 #define MONO_METHOD_IS_FINAL(m) (((m)->flags & METHOD_ATTRIBUTE_FINAL) || ((m)->klass && ((m)->klass->flags & TYPE_ATTRIBUTE_SEALED)))
 
@@ -1836,6 +1836,7 @@ typedef struct {
 	 * Next sequence points and flags are required by the debugger agent.
 	 */
 	gboolean gen_seq_points_debug_data;
+	gboolean gen_seq_points_compact_data;
 	gboolean explicit_null_checks;
 	/*
 	 * Fill stack frames with 0x2a in method prologs. This helps with the
@@ -2234,6 +2235,7 @@ void              mono_monitor_enter_trampoline (mgreg_t *regs, guint8 *code, Mo
 void              mono_monitor_exit_trampoline (mgreg_t *regs, guint8 *code, MonoObject *obj, guint8 *tramp) MONO_INTERNAL;
 gconstpointer     mono_get_trampoline_func (MonoTrampolineType tramp_type);
 gpointer          mini_get_vtable_trampoline (int slot_index) MONO_INTERNAL;
+const char*       mono_get_generic_trampoline_simple_name (MonoTrampolineType tramp_type) MONO_INTERNAL;
 char*             mono_get_generic_trampoline_name (MonoTrampolineType tramp_type) MONO_INTERNAL;
 char*             mono_get_rgctx_fetch_trampoline_name (int slot) MONO_INTERNAL;
 gpointer          mini_get_nullified_class_init_trampoline (void) MONO_INTERNAL;

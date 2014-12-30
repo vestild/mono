@@ -146,6 +146,7 @@ namespace MonoTests.System.ComponentModel
 		}
 
 		[Test]
+		[SetCulture("en-GB")]
 		public void ConvertToString ()
 		{
 			CultureInfo culture = new MyCultureInfo ();
@@ -161,7 +162,7 @@ namespace MonoTests.System.ComponentModel
 			CultureInfo ciDE = new CultureInfo("de-DE");
 			//
 			date = new DateTime(2008, 12, 31, 23, 59, 58, 5);
-			DoTestToString("12/31/2008 11:59 PM", date, ciUS);
+			DoTestToString("12/31/2008 11:59 pm", date, ciUS);
 			DoTestToString("31/12/2008 23:59", date, ciGB);
 			DoTestToString("31.12.2008 23:59", date, ciDE);
 			DoTestToString("12/31/2008 23:59:58", date, CultureInfo.InvariantCulture);

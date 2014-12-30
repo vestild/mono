@@ -196,13 +196,13 @@ namespace System.IO {
 
 				startedEvent.WaitOne ();
 
-				if (monitorExc != null) {
+				if (exc != null) {
 					thread.Join ();
 					CleanUp ();
-					throw monitorExc;
+					throw exc;
 				}
-				else 
-					started = true;
+ 
+				started = true;
 			}
 		}
 
@@ -213,14 +213,17 @@ namespace System.IO {
 					return;
 					
 				requestStop = true;
-				thread.Join ();
-				requestStop = false;
 
-				CleanUp ();
+				if (inDispatch)
+					return;
+				if (!thread.Join (2000))
+					thread.Abort ();
+
+				requestStop = false;
 				started = false;
 
-				if (monitorExc != null)
-					throw monitorExc;
+				if (exc != null)
+					throw exc;
 			}
 		}
 
@@ -239,32 +242,35 @@ namespace System.IO {
 		}
 
 		void DoMonitor ()
-		{
-			monitorExc = null;
-
+		{			
 			try {
 				Setup ();
 			} catch (Exception e) {
-				monitorExc = e;
+				exc = e;
 			} finally {
 				startedEvent.Set ();
 			}
 
-			if (monitorExc != null) 
+			if (exc != null) {
+				fsw.DispatchErrorEvents (new ErrorEventArgs (exc));
 				return;
+			}
 
 			try {
 				Monitor ();
 			} catch (Exception e) {
-				monitorExc = e;
+				exc = e;
 			} finally {
+				CleanUp ();
 				if (!requestStop) { // failure
-					CleanUp ();
 					started = false;
-					if (monitorExc != null)
-						throw monitorExc;
+					inDispatch = false;
+					fsw.EnableRaisingEvents = false;
+					throw exc;
 				}
-
+				if (exc != null)
+					fsw.DispatchErrorEvents (new ErrorEventArgs (exc));
+				requestStop = false;
 			}
 		}
 
@@ -361,7 +367,7 @@ namespace System.IO {
 
 					if ((kevt.flags & EventFlags.Error) == EventFlags.Error) {
 						var errMsg = String.Format ("kevent() error watching path '{0}', error code = '{1}'", pathData.Path, kevt.data);
-						fsw.OnError (new ErrorEventArgs (new IOException (errMsg)));
+						fsw.DispatchErrorEvents (new ErrorEventArgs (new IOException (errMsg)));
 						continue;
 					}
 						
@@ -409,7 +415,7 @@ namespace System.IO {
 			var fd = open (path, O_EVTONLY, 0);
 
 			if (fd == -1) {
-				fsw.OnError (new ErrorEventArgs (new IOException (String.Format (
+				fsw.DispatchErrorEvents (new ErrorEventArgs (new IOException (String.Format (
 					"open() error while attempting to process path '{0}', error code = '{1}'", path, Marshal.GetLastWin32Error ()))));
 				return null;
 			}
@@ -434,7 +440,7 @@ namespace System.IO {
 				return pathData;
 			} catch (Exception e) {
 				close (fd);
-				fsw.OnError (new ErrorEventArgs (e));
+				fsw.DispatchErrorEvents (new ErrorEventArgs (e));
 				return null;
 			}
 
@@ -556,7 +562,7 @@ namespace System.IO {
 		{
 			RenamedEventArgs renamed = null;
 
-			if (action == 0)
+			if (requestStop || action == 0)
 				return;
 
 			// e.Name
@@ -570,11 +576,11 @@ namespace System.IO {
 				string newName = newPath.Substring (fullPathNoLastSlash.Length + 1);
 				renamed = new RenamedEventArgs (WatcherChangeTypes.Renamed, fsw.Path, newName, name);
 			}
+				
+			fsw.DispatchEvents (action, name, ref renamed);
 
-			lock (fsw) {
-				fsw.DispatchEvents (action, name, ref renamed);
-
-				if (fsw.Waiting) {
+			if (fsw.Waiting) {
+				lock (fsw) {
 					fsw.Waiting = false;
 					System.Threading.Monitor.PulseAll (fsw);
 				}
@@ -591,7 +597,7 @@ namespace System.IO {
 
 				return sb.ToString ();
 			} else {
-				fsw.OnError (new ErrorEventArgs (new IOException (String.Format (
+				fsw.DispatchErrorEvents (new ErrorEventArgs (new IOException (String.Format (
 					"fcntl() error while attempting to get path for fd '{0}', error code = '{1}'", fd, Marshal.GetLastWin32Error ()))));
 				return String.Empty;
 			}
@@ -609,7 +615,8 @@ namespace System.IO {
 		volatile bool requestStop = false;
 		AutoResetEvent startedEvent = new AutoResetEvent (false);
 		bool started = false;
-		Exception monitorExc;
+		bool inDispatch = false;
+		Exception exc = null;
 		object stateLock = new object ();
 
 		readonly Dictionary<string, PathData> pathsDict = new Dictionary<string, PathData> ();

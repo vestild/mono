@@ -191,8 +191,6 @@ buildver-boehm.h: libmini-static.la $(monodir)/mono/metadata/libmonoruntime-stat
 endif
 	@echo "const char *build_date = \"`date`\";" > buildver-boehm.h
 mono_boehm-main.$(OBJEXT): buildver-boehm.h
-main.c: buildver-boehm.h
-
 endif
 
 if DISABLE_EXECUTABLES
@@ -202,8 +200,7 @@ buildver-sgen.h: libmini-static.la $(monodir)/mono/metadata/libmonoruntimesgen-s
 endif
 	@echo "const char *build_date = \"`date`\";" > buildver-sgen.h
 mono_sgen-main-sgen.$(OBJEXT): buildver-sgen.h
-main-sgen.c: buildver-sgen.h
-
+main-sgen.$(OBJEXT): buildver-sgen.h
 
 if DTRACE_G_REQUIRED
 LIBMONO_DTRACE_OBJECT = .libs/mono-dtrace.$(OBJEXT)
@@ -554,12 +551,12 @@ libmini_la_CFLAGS = $(mono_CFLAGS)
 
 libmonoboehm_2_0_la_SOURCES =
 libmonoboehm_2_0_la_CFLAGS = $(mono_boehm_CFLAGS)
-libmonoboehm_2_0_la_LIBADD = libmini.la $(libs) $(LIBMONO_DTRACE_OBJECT)
+libmonoboehm_2_0_la_LIBADD = libmini.la $(libs) $(LIBMONO_DTRACE_OBJECT) $(LLVMMONOF)
 libmonoboehm_2_0_la_LDFLAGS = $(libmonoldflags)
 
 libmonosgen_2_0_la_SOURCES =
 libmonosgen_2_0_la_CFLAGS = $(mono_sgen_CFLAGS)
-libmonosgen_2_0_la_LIBADD = libmini.la $(sgen_libs) $(LIBMONO_DTRACE_OBJECT)
+libmonosgen_2_0_la_LIBADD = libmini.la $(sgen_libs) $(LIBMONO_DTRACE_OBJECT) $(LLVMMONOF)
 libmonosgen_2_0_la_LDFLAGS = $(libmonoldflags)
 
 #

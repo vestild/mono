@@ -18,7 +18,7 @@ endif
 
 MCS = $(with_mono_path) $(INTERNAL_GMCS)
 
-PROFILE_MCS_FLAGS = -d:NET_1_1 -d:NET_2_0 -d:NET_3_0 -d:NET_3_5 -d:NET_4_0 -d:NET_4_5 -d:MONO -d:BOOTSTRAP_BASIC -nowarn:1699 -d:DISABLE_CAS_USE
+PROFILE_MCS_FLAGS = -d:NET_1_1 -d:NET_2_0 -d:NET_3_0 -d:NET_3_5 -d:NET_4_0 -d:NET_4_5 -d:MONO -d:BOOTSTRAP_BASIC -nowarn:1699 -d:DISABLE_CAS_USE -lib:$(topdir)/class/lib/$(PROFILE)
 NO_SIGN_ASSEMBLY = yes
 NO_TEST = yes
 NO_INSTALL = yes
@@ -67,6 +67,7 @@ do-profile-check: $(depsdir)/.stamp
 		echo "*** The compiler '$(BOOTSTRAP_MCS)' doesn't appear to be usable." 1>&2; \
                 echo "*** You need Mono version 3.2 or better installed to build MCS" 1>&2 ; \
                 echo "*** Check mono README for information on how to bootstrap a Mono installation." 1>&2 ; \
+		echo "*** The version of '$(BOOTSTRAP_MCS)' is: `$(BOOTSTRAP_MCS) --version`." 1>&2 ; \
 	        exit 1; fi; fi
 
 

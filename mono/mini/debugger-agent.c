@@ -4040,6 +4040,9 @@ assembly_load (MonoProfiler *prof, MonoAssembly *assembly, int result)
 static void
 assembly_unload (MonoProfiler *prof, MonoAssembly *assembly)
 {
+	if (is_debugger_thread ())
+		return;
+
 	process_profiler_event (EVENT_KIND_ASSEMBLY_UNLOAD, assembly);
 
 	clear_event_requests_for_assembly (assembly);
@@ -6428,6 +6431,10 @@ clear_types_for_assembly (MonoAssembly *assembly)
 {
 	MonoDomain *domain = mono_domain_get ();
 	AgentDomainInfo *info = NULL;
+
+	if (!domain || !domain_jit_info (domain))
+		/* Can happen during shutdown */
+		return;
 
 	mono_loader_lock ();
 	info = get_agent_domain_info (domain);
