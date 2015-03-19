@@ -1455,7 +1455,7 @@ static DebuggerTransport *transport;
 static DebuggerTransport transports [MAX_TRANSPORTS];
 static int ntransports;
 
-void
+MONO_API void
 mono_debugger_agent_register_transport (DebuggerTransport *trans);
 
 void
@@ -2572,7 +2572,7 @@ thread_interrupt (DebuggerTlsData *tls, MonoThreadInfo *info, void *sigctx, Mono
 	if (sigctx)
 		ip = mono_arch_ip_from_context (sigctx);
 	else if (info)
-		ip = MONO_CONTEXT_GET_IP (&info->suspend_state.ctx);
+		ip = MONO_CONTEXT_GET_IP (&mono_thread_info_get_suspend_state (info)->ctx);
 	else
 		ip = NULL;
 
@@ -2629,7 +2629,7 @@ thread_interrupt (DebuggerTlsData *tls, MonoThreadInfo *info, void *sigctx, Mono
 				 */
 				mono_walk_stack_with_ctx (get_last_frame, &ctx, MONO_UNWIND_NONE, &data);
 			} else if (info) {
-				mono_get_eh_callbacks ()->mono_walk_stack_with_state (get_last_frame, &info->suspend_state, MONO_UNWIND_SIGNAL_SAFE, &data);
+				mono_get_eh_callbacks ()->mono_walk_stack_with_state (get_last_frame, mono_thread_info_get_suspend_state (info), MONO_UNWIND_SIGNAL_SAFE, &data);
 			}
 			if (data.last_frame_set) {
 				memcpy (&tls->async_last_frame, &data.last_frame, sizeof (StackFrameInfo));
@@ -2707,6 +2707,24 @@ reset_native_thread_suspend_state (gpointer key, gpointer value, gpointer user_d
 	}
 }
 
+typedef struct {
+	DebuggerTlsData *tls;
+	gboolean valid_info;
+} InterruptData;
+
+static SuspendThreadResult
+debugger_interrupt_critical (MonoThreadInfo *info, gpointer user_data)
+{
+	InterruptData *data = user_data;
+	MonoJitInfo *ji;
+
+	data->valid_info = TRUE;
+	ji = mono_jit_info_table_find (mono_thread_info_get_suspend_state (info)->unwind_data [MONO_UNWIND_DATA_DOMAIN], MONO_CONTEXT_GET_IP (&mono_thread_info_get_suspend_state (info)->ctx));
+
+	thread_interrupt (data->tls, info, NULL, ji);
+	return MonoResumeThread;
+}
+
 /*
  * notify_thread:
  *
@@ -2747,22 +2765,16 @@ notify_thread (gpointer key, gpointer value, gpointer user_data)
 
 	/* This is _not_ equivalent to ves_icall_System_Threading_Thread_Abort () */
 	if (mono_thread_info_new_interrupt_enabled ()) {
-		MonoThreadInfo *info;
-		MonoJitInfo *ji;
+		InterruptData interrupt_data = { 0 };
+		interrupt_data.tls = tls;
 
-		info = mono_thread_info_safe_suspend_sync ((MonoNativeThreadId)(gpointer)(gsize)thread->tid, FALSE);
-		if (!info) {
+		mono_thread_info_safe_suspend_and_run ((MonoNativeThreadId)(gpointer)(gsize)thread->tid, FALSE, debugger_interrupt_critical, &interrupt_data);
+		if (!interrupt_data.valid_info) {
 			DEBUG_PRINTF (1, "[%p] mono_thread_info_suspend_sync () failed for %p...\n", (gpointer)GetCurrentThreadId (), (gpointer)tid);
 			/* 
 			 * Attached thread which died without detaching.
 			 */
 			tls->terminated = TRUE;
-		} else {
-			ji = mono_jit_info_table_find (info->suspend_state.unwind_data [MONO_UNWIND_DATA_DOMAIN], MONO_CONTEXT_GET_IP (&info->suspend_state.ctx));
-
-			thread_interrupt (tls, info, NULL, ji);
-
-			mono_thread_info_finish_suspend_and_resume (info);
 		}
 	} else {
 #ifdef HOST_WIN32
@@ -3986,6 +3998,15 @@ thread_end (MonoProfiler *prof, uintptr_t tid)
 	/* We might be called for threads started before we registered the start callback */
 	if (thread) {
 		DEBUG_PRINTF (1, "[%p] Thread terminated, obj=%p, tls=%p.\n", (gpointer)tid, thread, tls);
+
+		if (GetCurrentThreadId () == tid && !mono_native_tls_get_value (debugger_tls_id)) {
+			/*
+			 * This can happen on darwin since we deregister threads using pthread dtors.
+			 * process_profiler_event () and the code it calls cannot handle a null TLS value.
+			 */
+			return;
+		}
+
 		process_profiler_event (EVENT_KIND_THREAD_DEATH, thread);
 	}
 }
@@ -8930,7 +8951,6 @@ frame_commands (int command, guint8 *p, guint8 *end, Buffer *buf)
 	DebuggerTlsData *tls;
 	StackFrame *frame;
 	MonoDebugMethodJitInfo *jit;
-	MonoDebugVarInfo *var;
 	MonoMethodSignature *sig;
 	gssize id;
 	MonoMethodHeader *header;
@@ -9006,14 +9026,10 @@ frame_commands (int command, guint8 *p, guint8 *end, Buffer *buf)
 
 				g_assert (pos >= 0 && pos < jit->num_params);
 
-				var = &jit->params [pos];
-
 				add_var (buf, jit, sig->params [pos], &jit->params [pos], &frame->ctx, frame->domain, FALSE);
 			} else {
 				g_assert (pos >= 0 && pos < jit->num_locals);
 
-				var = &jit->locals [pos];
-				
 				add_var (buf, jit, header->locals [pos], &jit->locals [pos], &frame->ctx, frame->domain, FALSE);
 			}
 		}

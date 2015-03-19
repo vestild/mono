@@ -33,7 +33,9 @@ typedef int (STDCALL *SimpleDelegate) (int a);
 
 #if defined(WIN32) && defined (_MSC_VER)
 #define LIBTEST_API __declspec(dllexport)
-#else 
+#elif defined(__GNUC__)
+#define LIBTEST_API  __attribute__ ((visibility ("default")))
+#else
 #define LIBTEST_API
 #endif
 
@@ -409,7 +411,6 @@ mono_test_marshal_unicode_char_array (gunichar2 *s)
 	return 0;
 }
 
-
 LIBTEST_API int STDCALL 
 mono_test_empty_pinvoke (int i)
 {
@@ -504,6 +505,22 @@ mono_test_marshal_out_array (int *a1)
 		a1 [i] = i;
 	}
 	
+	return 0;
+}
+
+LIBTEST_API int STDCALL
+mono_test_marshal_out_byref_array_out_size_param (int **out_arr, int *out_len)
+{
+	int *arr;
+	int i, len;
+
+	len = 4;
+	arr = marshal_alloc (sizeof (gint32) * len);
+	for (i = 0; i < len; ++i)
+		arr [i] = i;
+	*out_arr = arr;
+	*out_len = len;
+
 	return 0;
 }
 
@@ -963,10 +980,7 @@ mono_test_marshal_delegate5 (SimpleDelegate5 delegate)
 LIBTEST_API int STDCALL 
 mono_test_marshal_delegate6 (SimpleDelegate5 delegate)
 {
-	int res;
-
-	res = delegate (NULL);
-
+	delegate (NULL);
 	return 0;
 }
 
@@ -3539,7 +3553,6 @@ test_method_thunk (int test_id, gpointer test_method_handle, gpointer create_obj
 
 	gpointer test_method, ex = NULL;
 	gpointer (STDCALL *CreateObject)(gpointer*);
-
 
 	if (!mono_method_get_unmanaged_thunk)
 		return 1;

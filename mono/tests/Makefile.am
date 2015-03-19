@@ -13,8 +13,8 @@ TEST_PROG = ../interpreter/mint
 
 JITTEST_PROG = $(if $(VALGRIND), valgrind $(VALGRIND_ARGS),) $(if $(SGEN),$(top_builddir)/mono/mini/mono-sgen,$(top_builddir)/mono/mini/mono)
 
-TEST_PROG_RUN = MONO_SHARED_DIR=$(mono_build_root)/runtime MONO_CFG_DIR=$(mono_build_root)/runtime/etc $(LIBTOOL) --mode=execute $(TEST_PROG)
-JITTEST_PROG_RUN = MONO_SHARED_DIR=$(mono_build_root)/runtime MONO_CFG_DIR=$(mono_build_root)/runtime/etc $(LIBTOOL) --mode=execute $(JITTEST_PROG)
+TEST_PROG_RUN = MONO_CFG_DIR=$(mono_build_root)/runtime/etc $(LIBTOOL) --mode=execute $(TEST_PROG)
+JITTEST_PROG_RUN = MONO_CFG_DIR=$(mono_build_root)/runtime/etc $(LIBTOOL) --mode=execute $(JITTEST_PROG)
 
 RUNTIME_ARGS=--config tests-config --optimize=all --debug
 
@@ -406,6 +406,7 @@ BASE_TEST_CS_SRC=		\
 	block_guard_restore_aligment_on_exit.cs	\
 	thread_static_gc_layout.cs \
 	sleep.cs \
+	bug-27147.cs	\
 	bug-17537.cs
 
 TEST_CS_SRC_DIST=	\
@@ -555,11 +556,13 @@ endif
 # bug-459094.exe creates an extremely deep directory tree
 # delegate-invoke.exe depends on 929c6bc9b6d76a273f251e6f5dfacac36e9c38bd which was
 # reverted.
+# bug-Xamarin-5278.exe got broken by 5d26590e79da139a284459299aee95c25f4cd835
 DISABLED_TESTS=			\
 	delegate-async-exception.exe	\
 	bug-348522.2.exe	\
 	bug-459094.exe \
 	delegate-invoke.exe \
+	bug-Xamarin-5278.exe \
 	$(PLATFORM_DISABLED_TESTS) \
 	$(EXTRA_DISABLED_TESTS)
 
@@ -840,7 +843,7 @@ runtest-managed: test-runner.exe $(TESTSI_CS) $(TESTSI_IL) $(TESTBS) libtest.la 
 	$(RUNTIME) ./test-runner.exe -j a --disabled "$${disabled_tests}" $(TESTSI_CS) $(TESTBS) $(TESTSI_IL)
 
 testjit:
-	@if test x$(M) != x; then $(MAKE) runtest-managed; else $(MAKE) runtest; fi
+	@if test x$(M) != x0; then $(MAKE) runtest-managed; else $(MAKE) runtest; fi
 
 testaot:
 	@$(MAKE) AOT=1 runtest
@@ -883,7 +886,7 @@ stresstest: $(STRESS_TESTS)
 testbundle: console.exe
 	@echo "Testing mkbundle..."
 	@$(MKBUNDLE) --static console.exe > mkbundle.stdout
-	@$(with_mono_path) MONO_CFG_DIR=$(mono_cfg_dir) MONO_SHARED_DIR=$(mono_build_root)/runtime ./a.out >> mkbundle.stdout
+	@$(with_mono_path) MONO_CFG_DIR=$(mono_cfg_dir) ./a.out >> mkbundle.stdout
 	@- rm -rf a.out
 
 EXTRA_DIST += load-missing.il t-missing.cs load-exceptions.cs
@@ -953,10 +956,12 @@ SGEN_CONFIGURATIONS =	\
 SGEN_BRIDGE_CONFIGURATIONS =	\
 	"|plain"	\
 	",major=marksweep-conc|ms-conc"	\
-	",minor=split|ms-split"	\
-	",bridge-implementation=new|plain-new-bridge"	\
-	",bridge-implementation=new,major=marksweep-conc|ms-conc-new-bridge"	\
-	",bridge-implementation=new,minor=split|ms-split-new-bridge"
+	"minor=split|ms-split"	\
+	"bridge-implementation=new|plain-new-bridge"	\
+	"bridge-implementation=new,major=marksweep-conc|ms-conc-new-bridge"	\
+	"bridge-implementation=new,minor=split|ms-split-new-bridge"	\
+	"bridge-implementation=tarjan|plain-tarjan-bridge"	\
+	"bridge-implementation=tarjan,minor=split|ms-split-tarjan-bridge"
 
 sgen-regular-tests: $(SGEN_TESTS)
 	@failed=0; \
@@ -995,7 +1000,7 @@ sgen-bridge-tests1: sgen-bridge.exe sgen-bridge-major-fragmentation.exe
 			name=`echo $$conf | cut -d\| -f 2`;	\
 			params=`echo $$conf | cut -d\| -f 1`;	\
 			test_name="$${test}|$${name}";	\
-			if MONO_GC_DEBUG="bridge=Bridge$${params}" MONO_ENV_OPTIONS="--gc=sgen" $(srcdir)/test-driver '$(with_mono_path) $(JITTEST_PROG_RUN)' $$test_name "$(DISABLED_TESTS_SGEN)" "$${dump_action}" $(RUNTIME_ARGS);	\
+			if MONO_GC_DEBUG="bridge=Bridge" MONO_GC_PARAMS="$${params}" MONO_ENV_OPTIONS="--gc=sgen" $(srcdir)/test-driver '$(with_mono_path) $(JITTEST_PROG_RUN)' $$test_name "$(DISABLED_TESTS_SGEN)" "$${dump_action}" $(RUNTIME_ARGS);	\
 			then \
 				passed=`expr $${passed} + 1`; \
 			else \
@@ -1020,7 +1025,7 @@ sgen-bridge-tests2: sgen-bridge-xref.exe
 			name=`echo $$conf | cut -d\| -f 2`;	\
 			params=`echo $$conf | cut -d\| -f 1`;	\
 			test_name="$${test}|$${name}";	\
-			if MONO_GC_DEBUG="bridge=2Bridge$${params}" MONO_ENV_OPTIONS="--gc=sgen" $(srcdir)/test-driver '$(with_mono_path) $(JITTEST_PROG_RUN)' $$test_name "$(DISABLED_TESTS_SGEN)" "$${dump_action}" $(RUNTIME_ARGS);	\
+			if MONO_GC_DEBUG="bridge=2Bridge" MONO_GC_PARAMS="$${params}" MONO_ENV_OPTIONS="--gc=sgen" $(srcdir)/test-driver '$(with_mono_path) $(JITTEST_PROG_RUN)' $$test_name "$(DISABLED_TESTS_SGEN)" "$${dump_action}" $(RUNTIME_ARGS);	\
 			then \
 				passed=`expr $${passed} + 1`; \
 			else \

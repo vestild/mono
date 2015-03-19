@@ -49,6 +49,9 @@ class Tests
 		public static T Get_T (double d, T t) {
 			return t;
 		}
+		public static T Get_T2 (double d, int i1, int i2, int i3, int i4, int i5, int i6, int i7, int i8, T t) {
+			return t;
+		}
 	}
 
 	class Foo3<T> {
@@ -57,7 +60,7 @@ class Tests
 		}
 	}
 
-	[Category ("!AMD64")]
+	[Category ("DYNCALL")]
 	static int test_0_arm64_dyncall_double () {
 		double arg1 = 1.0f;
 		double s = 2.0f;
@@ -67,7 +70,7 @@ class Tests
 		return 0;
 	}
 
-	[Category ("!AMD64")]
+	[Category ("DYNCALL")]
 	static int test_0_arm64_dyncall_float () {
 		double arg1 = 1.0f;
 		float s = 2.0f;
@@ -77,7 +80,7 @@ class Tests
 		return 0;
 	}
 
-	[Category ("!AMD64")]
+	[Category ("DYNCALL")]
 	static int test_0_arm64_dyncall_hfa_double () {
 		double arg1 = 1.0f;
 		// HFA with double members
@@ -90,7 +93,7 @@ class Tests
 		return 0;
 	}
 
-	[Category ("!AMD64")]
+	[Category ("DYNCALL")]
 	static int test_0_arm64_dyncall_hfa_float () {
 		double arg1 = 1.0f;
 		var s = new Struct2 ();
@@ -140,11 +143,15 @@ class Tests
 
 	interface IFaceFoo4<T> {
 		T Get_T (double d, T t);
+		T Get_T2 (double d, T t);
 	}
 
 	class Foo4<T> : IFaceFoo4<T> {
 		public T Get_T (double d, T t) {
 			return Foo2<T>.Get_T (d, t);
+		}
+		public T Get_T2 (double d, T t) {
+			return Foo2<T>.Get_T2 (d, 1, 2, 3, 4, 5, 6, 7, 8, t);
 		}
 	}
 
@@ -164,6 +171,32 @@ class Tests
 		var s_res = o.Get_T (1.0f, s);
 		if (s_res.o1 != 1 || s_res.o2 != 2 || s_res.o3 != 3)
 			return 1;
+		// Same with the byref argument passed on the stack
+		s_res = o.Get_T2 (1.0f, s);
+		if (s_res.o1 != 1 || s_res.o2 != 2 || s_res.o3 != 3)
+			return 2;
 		return 0;
 	}
+
+	class Foo5<T> {
+		public static T Get_T (object o) {
+			return (T)o;
+		}
+	}
+
+	[Category ("DYNCALL")]
+	static int test_0_arm64_dyncall_vtypebyref_ret () {
+		var s = new VTypeByRefStruct () { o1 = 1, o2 = 2, o3 = 3 };
+		Type t = typeof (Foo5<>).MakeGenericType (new Type [] { typeof (VTypeByRefStruct) });
+		var o = Activator.CreateInstance (t);
+		try {
+			var s_res = (VTypeByRefStruct)t.GetMethod ("Get_T").Invoke (o, new object [] { s });
+			if (s_res.o1 != 1 || s_res.o2 != 2 || s_res.o3 != 3)
+				return 1;
+		} catch (TargetInvocationException) {
+			return 2;
+		}
+		return 0;
+	}
+
 }

@@ -653,6 +653,21 @@ namespace System
 			return CreateInstance (elementType, length);
 		}
 
+		internal static Array UnsafeCreateInstance(Type elementType, int[] lengths, int[] lowerBounds)
+		{
+			return CreateInstance(elementType, lengths, lowerBounds);
+		}
+
+		internal static Array UnsafeCreateInstance (Type elementType, int length1, int length2)
+		{
+			return CreateInstance (elementType, length1, length2);
+		}
+
+		internal static Array UnsafeCreateInstance (Type elementType, params int[] lengths)
+		{
+			return CreateInstance(elementType, lengths);
+		}
+
 		public static Array CreateInstance (Type elementType, int length)
 		{
 			int[] lengths = {length};
@@ -686,8 +701,8 @@ namespace System
 
 			int[] bounds = null;
 
-			elementType = elementType.UnderlyingSystemType;
-			if (!elementType.IsSystemType)
+			elementType = elementType.UnderlyingSystemType as RuntimeType;
+			if (elementType == null)
 				throw new ArgumentException ("Type must be a type provided by the runtime.", "elementType");
 			if (elementType.Equals (typeof (void)))
 				throw new NotSupportedException ("Array type can not be void");
@@ -710,8 +725,8 @@ namespace System
 			if (lowerBounds == null)
 				throw new ArgumentNullException ("lowerBounds");
 
-			elementType = elementType.UnderlyingSystemType;
-			if (!elementType.IsSystemType)
+			elementType = elementType.UnderlyingSystemType as RuntimeType;
+			if (elementType == null)
 				throw new ArgumentException ("Type must be a type provided by the runtime.", "elementType");
 			if (elementType.Equals (typeof (void)))
 				throw new NotSupportedException ("Array type can not be void");

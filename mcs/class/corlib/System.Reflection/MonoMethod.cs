@@ -109,13 +109,22 @@ namespace System.Reflection {
 		}
 	};
 	
+	abstract class RuntimeMethodInfo : MethodInfo
+	{
+		internal BindingFlags BindingFlags {
+			get {
+				return 0;
+			}
+		}
+	}
+
 	/*
 	 * Note: most of this class needs to be duplicated for the contructor, since
 	 * the .NET reflection class hierarchy is so broken.
 	 */
 	[Serializable()]
 	[StructLayout (LayoutKind.Sequential)]
-	internal class MonoMethod : MethodInfo, ISerializable
+	internal class MonoMethod : RuntimeMethodInfo, ISerializable
 	{
 #pragma warning disable 649
 		internal IntPtr mhandle;
@@ -202,11 +211,11 @@ namespace System.Reflection {
 		public override Object Invoke (Object obj, BindingFlags invokeAttr, Binder binder, Object[] parameters, CultureInfo culture) 
 		{
 			if (binder == null)
-				binder = Binder.DefaultBinder;
+				binder = Type.DefaultBinder;
 
 			/*Avoid allocating an array every time*/
 			ParameterInfo[] pinfo = GetParametersInternal ();
-			binder.ConvertValues (parameters, pinfo, culture, (invokeAttr & BindingFlags.ExactBinding) != 0);
+			ConvertValues (binder, parameters, pinfo, culture, invokeAttr);
 
 #if !NET_2_1
 			if (SecurityManager.SecurityEnabled) {
@@ -241,6 +250,34 @@ namespace System.Reflection {
 			if (exc != null)
 				throw exc;
 			return o;
+		}
+
+		internal static void ConvertValues (Binder binder, object[] args, ParameterInfo[] pinfo, CultureInfo culture, BindingFlags invokeAttr)
+		{
+			if (args == null) {
+				if (pinfo.Length == 0)
+					return;
+
+				throw new TargetParameterCountException ();
+			}
+
+			if (pinfo.Length != args.Length)
+				throw new TargetParameterCountException ();
+
+			for (int i = 0; i < args.Length; ++i) {
+				var arg = args [i];
+				var pi = pinfo [i];
+				if (arg == Type.Missing) {
+					if (pi.DefaultValue == System.DBNull.Value)
+						throw new ArgumentException(Environment.GetResourceString("Arg_VarMissNull"),"parameters");
+
+					args [i] = pi.DefaultValue;
+					continue;
+				}
+
+				var rt = (RuntimeType) pi.ParameterType;
+				args [i] = rt.CheckValue (arg, binder, culture, invokeAttr);
+			}
 		}
 
 		public override RuntimeMethodHandle MethodHandle { 
@@ -444,11 +481,42 @@ namespace System.Reflection {
 		public override IList<CustomAttributeData> GetCustomAttributesData () {
 			return CustomAttributeData.GetCustomAttributes (this);
 		}
+
+		//seclevel { transparent = 0, safe-critical = 1, critical = 2}
+		[MethodImplAttribute(MethodImplOptions.InternalCall)]
+		public extern int get_core_clr_security_level ();
+
+		public override bool IsSecurityTransparent {
+			get { return get_core_clr_security_level () == 0; }
+		}
+
+		public override bool IsSecurityCritical {
+			get { return get_core_clr_security_level () > 0; }
+		}
+
+		public override bool IsSecuritySafeCritical {
+			get { return get_core_clr_security_level () == 1; }
+		}
 	}
 	
+
+	abstract class RuntimeConstructorInfo : ConstructorInfo
+	{
+		internal BindingFlags BindingFlags {
+			get {
+				return 0;
+			}
+		}
+
+		internal void SerializationInvoke (Object target, SerializationInfo info, StreamingContext context)
+		{
+			Invoke (target, new object[] { info, context });
+		}
+	}
+
 	[Serializable()]
 	[StructLayout (LayoutKind.Sequential)]
-	internal class MonoCMethod : ConstructorInfo, ISerializable
+	internal class MonoCMethod : RuntimeConstructorInfo, ISerializable
 	{
 #pragma warning disable 649		
 		internal IntPtr mhandle;
@@ -501,11 +569,11 @@ namespace System.Reflection {
 		object DoInvoke (object obj, BindingFlags invokeAttr, Binder binder, object[] parameters, CultureInfo culture) 
 		{
 			if (binder == null)
-				binder = Binder.DefaultBinder;
+				binder = Type.DefaultBinder;
 
 			ParameterInfo[] pinfo = MonoMethodInfo.GetParametersInfo (mhandle, this);
 
-			binder.ConvertValues (parameters, pinfo, culture, (invokeAttr & BindingFlags.ExactBinding) != 0);
+			MonoMethod.ConvertValues (binder, parameters, pinfo, culture, invokeAttr);
 
 #if !NET_2_1
 			if (SecurityManager.SecurityEnabled) {

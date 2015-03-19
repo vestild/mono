@@ -583,8 +583,7 @@ namespace System.Reflection.Emit {
 		{
 			if (method == null)
 				throw new ArgumentNullException ("method");
-			if (method.DeclaringType.Module != this)
-				throw new InvalidOperationException ("The method is not in this module");
+
 			return new MethodToken (GetToken (method));
 		}
 

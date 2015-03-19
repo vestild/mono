@@ -76,7 +76,8 @@ namespace System
 			if (flds.Length == 0) {
 				throw new ArgumentException (Locale.GetText ("flds has no elements"));
 			}
-			throw new NotImplementedException ();
+
+			return MakeTypedReferenceInternal (target, flds);
 		}
 
 		/* how can we set something in value if it's passed by value? */
@@ -95,7 +96,16 @@ namespace System
 			return value.type;
 		}
 
+		internal bool IsNull {
+			get {
+				return value.IsNull () && klass.IsNull ();
+			}
+		}
+
 		[MethodImpl (MethodImplOptions.InternalCall)]
 		public extern static object ToObject (TypedReference value);
+
+		[MethodImpl (MethodImplOptions.InternalCall)]
+		extern static TypedReference MakeTypedReferenceInternal (object target, FieldInfo[] fields);
 	}
 }

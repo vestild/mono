@@ -57,6 +57,7 @@ sgen_suspend_thread (SgenThreadInfo *info)
 
 	CloseHandle (handle);
 
+#if !defined(MONO_CROSS_COMPILE)
 #ifdef USE_MONO_CTX
 	memset (&info->ctx, 0, sizeof (MonoContext));
 #ifdef TARGET_AMD64
@@ -104,6 +105,7 @@ sgen_suspend_thread (SgenThreadInfo *info)
 	info->stopped_ip = (gpointer)context.Eip;
 	info->stack_start = (char*)context.Esp - REDZONE_SIZE;
 #endif
+#endif
 
 	/* Notify the JIT */
 	if (mono_gc_get_gc_callbacks ()->thread_suspend_func)
@@ -125,9 +127,11 @@ sgen_thread_handshake (BOOL suspend)
 	SgenThreadInfo *current = mono_thread_info_current ();
 	int count = 0;
 
+	current->suspend_done = TRUE;
 	FOREACH_THREAD_SAFE (info) {
 		if (info == current)
 			continue;
+		info->suspend_done = FALSE;
 		if (info->gc_disabled)
 			continue;
 		if (suspend) {

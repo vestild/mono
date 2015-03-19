@@ -43,19 +43,18 @@ MonoString  *
 ves_icall_System_String_InternalIntern (MonoString *str)
 {
 	MonoString *res;
-	MONO_ARCH_SAVE_REGS;
 
 	res = mono_string_intern(str);
-	if (!res)
-		mono_raise_exception (mono_domain_get ()->out_of_memory_ex);
+	if (!res) {
+		mono_set_pending_exception (mono_domain_get ()->out_of_memory_ex);
+		return NULL;
+	}
 	return res;
 }
 
 MonoString * 
 ves_icall_System_String_InternalIsInterned (MonoString *str)
 {
-	MONO_ARCH_SAVE_REGS;
-
 	return mono_string_is_interned(str);
 }
 

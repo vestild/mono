@@ -617,8 +617,9 @@ is_valid_generic_argument (MonoType *type)
 	case MONO_TYPE_VOID:
 	//case MONO_TYPE_TYPEDBYREF:
 		return FALSE;
+	default:
+		return TRUE;
 	}
-	return TRUE;
 }
 
 static MonoType*
@@ -1350,8 +1351,9 @@ mono_type_has_exceptions (MonoType *type)
 		return type->data.array->eklass->exception_type;
 	case MONO_TYPE_GENERICINST:
 		return mono_generic_class_get_class (type->data.generic_class)->exception_type;
+	default:
+		return FALSE;
 	}
-	return FALSE;
 }
 
 /*
@@ -1760,8 +1762,8 @@ mono_class_has_references (MonoClass *klass)
 MonoType*
 mono_type_get_basic_type_from_generic (MonoType *type)
 {
-	/* When we do generic sharing we let type variables stand for reference types. */
-	if (!type->byref && (type->type == MONO_TYPE_VAR || type->type == MONO_TYPE_MVAR))
+	/* When we do generic sharing we let type variables stand for reference/primitive types. */
+	if (!type->byref && (type->type == MONO_TYPE_VAR || type->type == MONO_TYPE_MVAR) && !type->data.generic_param->gshared_constraint)
 		return &mono_defaults.object_class->byval_arg;
 	return type;
 }
@@ -4264,7 +4266,6 @@ mono_class_setup_vtable_general (MonoClass *class, MonoMethod **overrides, int o
 	GHashTable *override_map = NULL;
 	gboolean security_enabled = mono_security_enabled ();
 	MonoMethod *cm;
-	gpointer class_iter;
 #if (DEBUG_INTERFACE_VTABLE_CODE|TRACE_INTERFACE_VTABLE_CODE)
 	int first_non_interface_slot;
 #endif
@@ -4501,11 +4502,9 @@ mono_class_setup_vtable_general (MonoClass *class, MonoMethod **overrides, int o
 			// otherwise look for a matching method
 			if (override_im == NULL) {
 				int cm_index;
-				gpointer iter;
 				MonoMethod *cm;
 
 				// First look for a suitable method among the class methods
-				iter = NULL;
 				for (l = virt_methods; l; l = l->next) {
 					cm = l->data;
 					TRACE_INTERFACE_VTABLE (printf ("    For slot %d ('%s'.'%s':'%s'), trying method '%s'.'%s':'%s'... [EXPLICIT IMPLEMENTATION = %d][SLOT IS NULL = %d]", im_slot, ic->name_space, ic->name, im->name, cm->klass->name_space, cm->klass->name, cm->name, interface_is_explicitly_implemented_by_class, (vtable [im_slot] == NULL)));
@@ -4581,7 +4580,6 @@ mono_class_setup_vtable_general (MonoClass *class, MonoMethod **overrides, int o
 	}
 
 	TRACE_INTERFACE_VTABLE (print_vtable_full (class, vtable, cur_slot, first_non_interface_slot, "AFTER SETTING UP INTERFACE METHODS", FALSE));
-	class_iter = NULL;
 	for (l = virt_methods; l; l = l->next) {
 		cm = l->data;
 		/*
@@ -6153,9 +6151,14 @@ make_generic_param_class (MonoGenericParam *param, MonoImage *image, gboolean is
 
 	/*Init these fields to sane values*/
 	klass->min_align = 1;
-	klass->instance_size = sizeof (gpointer);
+	/*
+	 * This makes sure the the value size of this class is equal to the size of the types the gparam is
+	 * constrained to, the JIT depends on this.
+	 */
+	klass->instance_size = sizeof (MonoObject) + mono_type_stack_size_internal (&klass->byval_arg, NULL, TRUE);
 	mono_memory_barrier ();
 	klass->size_inited = 1;
+	klass->setup_fields_called = 1;
 
 	mono_class_setup_supertypes (klass);
 
@@ -6178,7 +6181,7 @@ make_generic_param_class (MonoGenericParam *param, MonoImage *image, gboolean is
 static MonoClass *
 get_anon_gparam_class (MonoGenericParam *param, gboolean is_mvar, gboolean take_lock)
 {
-	int n = mono_generic_param_num (param) | ((guint32)param->serial << 16);
+	int n = mono_generic_param_num (param) | ((guint32)param->gshared_constraint << 16);
 	MonoImage *image = param->image;
 	GHashTable *ht;
 
@@ -6209,7 +6212,7 @@ get_anon_gparam_class (MonoGenericParam *param, gboolean is_mvar, gboolean take_
 static void
 set_anon_gparam_class (MonoGenericParam *param, gboolean is_mvar, MonoClass *klass)
 {
-	int n = mono_generic_param_num (param) | ((guint32)param->serial << 16);
+	int n = mono_generic_param_num (param) | ((guint32)param->gshared_constraint << 16);
 	MonoImage *image = param->image;
 
 	g_assert (image);
@@ -6685,6 +6688,8 @@ mono_bounded_array_class_get (MonoClass *eclass, guint32 rank, gboolean bounded)
 	case MONO_TYPE_U:
 #endif
 		class->cast_class = mono_defaults.int64_class;
+		break;
+	default:
 		break;
 	}
 
@@ -8435,8 +8440,6 @@ handle_enum:
 	case MONO_TYPE_OBJECT:
 	case MONO_TYPE_SZARRAY:
 	case MONO_TYPE_ARRAY: 
-	case MONO_TYPE_VAR:
-	case MONO_TYPE_MVAR:   
 		return sizeof (gpointer);
 	case MONO_TYPE_I8:
 	case MONO_TYPE_U8:
@@ -8452,7 +8455,12 @@ handle_enum:
 	case MONO_TYPE_GENERICINST:
 		type = &type->data.generic_class->container_class->byval_arg;
 		goto handle_enum;
+	case MONO_TYPE_VAR:
+	case MONO_TYPE_MVAR: {
+		int align;
 
+		return mono_type_size (type, &align);
+	}
 	case MONO_TYPE_VOID:
 		return 0;
 		
@@ -9942,6 +9950,8 @@ can_access_instantiation (MonoClass *access_klass, MonoGenericInst *ginst)
 		case MONO_TYPE_GENERICINST:
 			if (!can_access_type (access_klass, mono_class_from_mono_type (type)))
 				return FALSE;
+		default:
+			break;
 		}
 	}
 	return TRUE;
@@ -10239,8 +10249,9 @@ gboolean mono_type_is_valid_enum_basetype (MonoType * type) {
 	case MONO_TYPE_I:
 	case MONO_TYPE_U:
 		return TRUE;
+	default:
+		return FALSE;
 	}
-	return FALSE;
 }
 
 /**

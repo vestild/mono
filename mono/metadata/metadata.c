@@ -3146,6 +3146,8 @@ mono_metadata_get_shared_type (MonoType *type)
 		if (type == &type->data.klass->this_arg)
 			return type;
 		break;
+	default:
+		break;
 	}
 
 	return NULL;
@@ -3163,9 +3165,32 @@ compare_type_literals (int class_type, int type_type)
 	/* NET 1.1 assemblies might encode string and object in a denormalized way.
 	 * See #675464.
 	 */
-	if (type_type == MONO_TYPE_CLASS && (class_type == MONO_TYPE_STRING || class_type == MONO_TYPE_OBJECT))
+	if (class_type == type_type)
 		return TRUE;
-	return class_type == type_type;
+
+	if (type_type == MONO_TYPE_CLASS)
+		return class_type == MONO_TYPE_STRING || class_type == MONO_TYPE_OBJECT;
+
+	g_assert (type_type == MONO_TYPE_VALUETYPE);
+	switch (class_type) {
+	case MONO_TYPE_BOOLEAN:
+	case MONO_TYPE_CHAR:
+	case MONO_TYPE_I1:
+	case MONO_TYPE_U1:
+	case MONO_TYPE_I2:
+	case MONO_TYPE_U2:
+	case MONO_TYPE_I4:
+	case MONO_TYPE_U4:
+	case MONO_TYPE_I8:
+	case MONO_TYPE_U8:
+	case MONO_TYPE_R4:
+	case MONO_TYPE_R8:
+	case MONO_TYPE_I:
+	case MONO_TYPE_U:
+		return TRUE;
+	default:
+		return FALSE;
+	}
 }
 
 /* 
@@ -3315,6 +3340,8 @@ mono_metadata_free_type (MonoType *type)
 	case MONO_TYPE_ARRAY:
 		mono_metadata_free_array (type->data.array);
 		break;
+	default:
+		break;
 	}
 
 	g_free (type);
@@ -3350,14 +3377,13 @@ static MonoExceptionClause*
 parse_section_data (MonoImage *m, int *num_clauses, const unsigned char *ptr)
 {
 	unsigned char sect_data_flags;
-	const unsigned char *sptr;
 	int is_fat;
 	guint32 sect_data_len;
 	MonoExceptionClause* clauses = NULL;
 	
 	while (1) {
 		/* align on 32-bit boundary */
-		sptr = ptr = dword_align (ptr); 
+		ptr = dword_align (ptr); 
 		sect_data_flags = *ptr;
 		ptr++;
 		
@@ -3369,14 +3395,7 @@ parse_section_data (MonoImage *m, int *num_clauses, const unsigned char *ptr)
 			sect_data_len = ptr [0];
 			++ptr;
 		}
-		/*
-		g_print ("flags: %02x, len: %d\n", sect_data_flags, sect_data_len);
-		hex_dump (sptr, 0, sect_data_len+8);
-		g_print ("\nheader: ");
-		hex_dump (sptr-4, 0, 4);
-		g_print ("\n");
-		*/
-		
+
 		if (sect_data_flags & METHOD_HEADER_SECTION_EHTABLE) {
 			const unsigned char *p = dword_align (ptr);
 			int i;
@@ -3525,7 +3544,7 @@ mono_metadata_parse_mh_full (MonoImage *m, MonoGenericContainer *container, cons
 	guint32 local_var_sig_tok, max_stack, code_size, init_locals;
 	const unsigned char *code;
 	MonoExceptionClause* clauses = NULL;
-	int hsize, num_clauses = 0;
+	int num_clauses = 0;
 	MonoTableInfo *t = &m->tables [MONO_TABLE_STANDALONESIG];
 	guint32 cols [MONO_STAND_ALONE_SIGNATURE_SIZE];
 
@@ -3544,7 +3563,6 @@ mono_metadata_parse_mh_full (MonoImage *m, MonoGenericContainer *container, cons
 	case METHOD_HEADER_FAT_FORMAT:
 		fat_flags = read16 (ptr);
 		ptr += 2;
-		hsize = (fat_flags >> 12) & 0xf;
 		max_stack = read16 (ptr);
 		ptr += 2;
 		code_size = read32 (ptr);
@@ -3584,10 +3602,10 @@ mono_metadata_parse_mh_full (MonoImage *m, MonoGenericContainer *container, cons
 		clauses = parse_section_data (m, &num_clauses, (const unsigned char*)ptr);
 	if (local_var_sig_tok) {
 		const char *locals_ptr;
-		int len=0, i, bsize;
+		int len=0, i;
 
 		locals_ptr = mono_metadata_blob_heap (m, cols [MONO_STAND_ALONE_SIGNATURE]);
-		bsize = mono_metadata_decode_blob_size (locals_ptr, &locals_ptr);
+		mono_metadata_decode_blob_size (locals_ptr, &locals_ptr);
 		if (*locals_ptr != 0x07)
 			g_warning ("wrong signature for locals blob");
 		locals_ptr++;
@@ -4345,6 +4363,8 @@ mono_type_set_alignment (MonoTypeEnum type, int align)
 int
 mono_type_size (MonoType *t, int *align)
 {
+	MonoTypeEnum simple_type;
+
 	if (!t) {
 		*align = 1;
 		return 0;
@@ -4354,7 +4374,9 @@ mono_type_size (MonoType *t, int *align)
 		return sizeof (gpointer);
 	}
 
-	switch (t->type){
+	simple_type = t->type;
+ again:
+	switch (simple_type) {
 	case MONO_TYPE_VOID:
 		*align = 1;
 		return 0;
@@ -4427,9 +4449,14 @@ mono_type_size (MonoType *t, int *align)
 	}
 	case MONO_TYPE_VAR:
 	case MONO_TYPE_MVAR:
-		/* FIXME: Martin, this is wrong. */
-		*align = MONO_ABI_ALIGNOF (gpointer);
-		return sizeof (gpointer);
+		if (t->data.generic_param->gshared_constraint == 0 || t->data.generic_param->gshared_constraint == MONO_TYPE_VALUETYPE) {
+			*align = MONO_ABI_ALIGNOF (gpointer);
+			return sizeof (gpointer);
+		} else {
+			/* The gparam can only match types given by gshared_constraint */
+			simple_type = t->data.generic_param->gshared_constraint;
+			goto again;
+		}
 	default:
 		g_error ("mono_type_size: type 0x%02x unknown", t->type);
 	}
@@ -4453,6 +4480,7 @@ int
 mono_type_stack_size_internal (MonoType *t, int *align, gboolean allow_open)
 {
 	int tmp;
+	MonoTypeEnum simple_type;
 #if SIZEOF_VOID_P == SIZEOF_REGISTER
 	int stack_slot_size = sizeof (gpointer);
 	int stack_slot_align = MONO_ABI_ALIGNOF (gpointer);
@@ -4471,7 +4499,9 @@ mono_type_stack_size_internal (MonoType *t, int *align, gboolean allow_open)
 		return stack_slot_size;
 	}
 
-	switch (t->type){
+	simple_type = t->type;
+ again:
+	switch (simple_type) {
 	case MONO_TYPE_BOOLEAN:
 	case MONO_TYPE_CHAR:
 	case MONO_TYPE_I1:
@@ -4494,8 +4524,14 @@ mono_type_stack_size_internal (MonoType *t, int *align, gboolean allow_open)
 	case MONO_TYPE_VAR:
 	case MONO_TYPE_MVAR:
 		g_assert (allow_open);
-		*align = stack_slot_align;
-		return stack_slot_size;
+		if (t->data.generic_param->gshared_constraint == 0 || t->data.generic_param->gshared_constraint == MONO_TYPE_VALUETYPE) {
+			*align = stack_slot_align;
+			return stack_slot_size;
+		} else {
+			/* The gparam can only match types given by gshared_constraint */
+			simple_type = t->data.generic_param->gshared_constraint;
+			goto again;
+		}
 	case MONO_TYPE_TYPEDBYREF:
 		*align = stack_slot_align;
 		return stack_slot_size * 3;
@@ -4678,8 +4714,9 @@ mono_metadata_type_hash (MonoType *t1)
 	case MONO_TYPE_VAR:
 	case MONO_TYPE_MVAR:
 		return ((hash << 5) - hash) ^ mono_metadata_generic_param_hash (t1->data.generic_param);
+	default:
+		return hash;
 	}
-	return hash;
 }
 
 static guint
@@ -4688,7 +4725,7 @@ mono_metadata_generic_param_hash (MonoGenericParam *p)
 	guint hash;
 	MonoGenericParamInfo *info;
 
-	hash = (mono_generic_param_num (p) << 2) | p->serial;
+	hash = (mono_generic_param_num (p) << 2) | p->gshared_constraint;
 	info = mono_generic_param_info (p);
 	/* Can't hash on the owner klass/method, since those might not be set when this is called */
 	if (info)
@@ -4703,7 +4740,7 @@ mono_metadata_generic_param_equal (MonoGenericParam *p1, MonoGenericParam *p2, g
 		return TRUE;
 	if (mono_generic_param_num (p1) != mono_generic_param_num (p2))
 		return FALSE;
-	if (p1->serial != p2->serial)
+	if (p1->gshared_constraint != p2->gshared_constraint)
 		return FALSE;
 
 	/*
@@ -5346,7 +5383,6 @@ mono_type_create_from_typespec_checked (MonoImage *image, guint32 type_spec, Mon
 	MonoTableInfo *t;
 	guint32 cols [MONO_TYPESPEC_SIZE];
 	const char *ptr;
-	guint32 len;
 	MonoType *type, *type2;
 
 	mono_error_init (error);
@@ -5367,7 +5403,7 @@ mono_type_create_from_typespec_checked (MonoImage *image, guint32 type_spec, Mon
 		return NULL;
 	}
 
-	len = mono_metadata_decode_value (ptr, &ptr);
+	mono_metadata_decode_value (ptr, &ptr);
 
 	type = mono_metadata_parse_type_internal (image, NULL, MONO_PARSE_TYPE, 0, TRUE, ptr, &ptr);
 	if (!type) {

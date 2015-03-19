@@ -92,7 +92,7 @@
 #include <mono/utils/mono-signal-handler.h>
 
 /* The process' environment strings */
-#if defined(__APPLE__) && !defined (__arm__)
+#if defined(__APPLE__) && !defined (__arm__) && !defined (__aarch64__)
 /* Apple defines this in crt_externs.h but doesn't provide that header for 
  * arm-apple-darwin9.  We'll manually define the symbol on Apple as it does
  * in fact exist on all implementations (so far) 
@@ -114,7 +114,7 @@ static guint32 process_wait (gpointer handle, guint32 timeout, gboolean alertabl
 static void process_close (gpointer handle, gpointer data);
 static gboolean is_pid_valid (pid_t pid);
 
-#if !defined(__OpenBSD__)
+#if !(defined(PLATFORM_MACOSX) || defined(__OpenBSD__) || defined(__HAIKU__))
 static FILE *
 open_process_map (int pid, const char *mode);
 #endif
@@ -501,10 +501,12 @@ CreateProcessWithLogonW (const gunichar2 *username,
 }
 
 static gboolean
-is_readable (const char *prog)
+is_readable_or_executable (const char *prog)
 {
 	struct stat buf;
-	if (access (prog, R_OK) != 0)
+	int a = access (prog, R_OK);
+	int b = access (prog, X_OK);
+	if (a != 0 && b != 0)
 		return FALSE;
 	if (stat (prog, &buf))
 		return FALSE;
@@ -645,7 +647,7 @@ gboolean CreateProcess (const gunichar2 *appname, const gunichar2 *cmdline,
 			prog = g_strdup (unquoted);
 
 			/* Executable existing ? */
-			if (!is_readable (prog)) {
+			if (!is_readable_or_executable (prog)) {
 				DEBUG ("%s: Couldn't find executable %s",
 					   __func__, prog);
 				g_free (unquoted);
@@ -662,7 +664,7 @@ gboolean CreateProcess (const gunichar2 *appname, const gunichar2 *cmdline,
 			g_free (curdir);
 
 			/* And make sure it's readable */
-			if (!is_readable (prog)) {
+			if (!is_readable_or_executable (prog)) {
 				DEBUG ("%s: Couldn't find executable %s",
 					   __func__, prog);
 				g_free (unquoted);
@@ -753,7 +755,7 @@ gboolean CreateProcess (const gunichar2 *appname, const gunichar2 *cmdline,
 			prog = g_strdup (token);
 			
 			/* Executable existing ? */
-			if (!is_readable (prog)) {
+			if (!is_readable_or_executable (prog)) {
 				DEBUG ("%s: Couldn't find executable %s",
 					   __func__, token);
 				g_free (token);
@@ -777,7 +779,7 @@ gboolean CreateProcess (const gunichar2 *appname, const gunichar2 *cmdline,
 			 *
 			 * X_OK is too strict *if* the target is a CLR binary
 			 */
-			if (!is_readable (prog)) {
+			if (!is_readable_or_executable (prog)) {
 				g_free (prog);
 				prog = g_find_program_in_path (token);
 				if (prog == NULL) {
@@ -1692,7 +1694,7 @@ static gboolean match_procname_to_modulename (char *procname, char *modulename)
 	return result;
 }
 
-#if !defined(__OpenBSD__)
+#if !(defined(PLATFORM_MACOSX) || defined(__OpenBSD__) || defined(__HAIKU__))
 static FILE *
 open_process_map (int pid, const char *mode)
 {
@@ -2599,7 +2601,7 @@ static guint32
 process_wait (gpointer handle, guint32 timeout, gboolean alertable)
 {
 	WapiHandle_process *process_handle;
-	pid_t pid, ret;
+	pid_t pid G_GNUC_UNUSED, ret;
 	int status;
 	guint32 start;
 	guint32 now;

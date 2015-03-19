@@ -34,16 +34,21 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography.X509Certificates;
 using System.Security;
 using System.Security.Permissions;
-
+using System.Runtime.Serialization;
 
 namespace System.Reflection {
+
+	abstract class RuntimeModule : Module
+	{
+		
+	}
 
 	[ComVisible (true)]
 	[ComDefaultInterfaceAttribute (typeof (_Module))]
 	[Serializable]
 	[ClassInterface(ClassInterfaceType.None)]
-	class MonoModule : Module {
-
+	class MonoModule : RuntimeModule
+	{
 		public
 		override
 		Assembly Assembly {
@@ -127,6 +132,9 @@ namespace System.Reflection {
 		public override
 		FieldInfo GetField (string name, BindingFlags bindingAttr) 
 		{
+			if (name == null)
+				throw new ArgumentNullException("name");
+
 			if (IsResource ())
 				return null;
 
@@ -267,6 +275,14 @@ namespace System.Reflection {
 				return res;
 		}
 
+		public override void GetObjectData (SerializationInfo info, StreamingContext context)
+		{
+			if (info == null)
+				throw new ArgumentNullException ("info");
+
+			UnitySerializationHolder.GetUnitySerializationInfo (info, UnitySerializationHolder.ModuleUnity, this.ScopeName, this.GetRuntimeAssembly ());
+		}
+
 #if !NET_2_1
 
 		public
@@ -290,6 +306,11 @@ namespace System.Reflection {
 
 		public override IList<CustomAttributeData> GetCustomAttributesData () {
 			return CustomAttributeData.GetCustomAttributes (this);
+		}
+
+		internal RuntimeAssembly GetRuntimeAssembly ()
+		{
+			return (RuntimeAssembly)assembly;
 		}
 	}
 }

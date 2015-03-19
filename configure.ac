@@ -1,7 +1,7 @@
 # Process this file with autoconf to produce a configure script.
 #AC_PREREQ([2.62])
 
-AC_INIT(mono, [3.99.0],
+AC_INIT(mono, [4.1.0],
         [http://bugzilla.xamarin.com/enter_bug.cgi?classification=Mono])
 
 AC_CONFIG_SRCDIR([README.md])
@@ -69,9 +69,6 @@ AC_SUBST(libmono_ldflags)
 # Variable to have relocatable .pc files (lib, or lib64)
 reloc_libdir=`basename ${libdir}`
 AC_SUBST(reloc_libdir)
-
-dnl if linker handles the version script
-no_version_script=no
 
 # Set to yes if Unix sockets cannot be created in an anonymous namespace
 need_link_unlink=no
@@ -310,7 +307,6 @@ case "$host" in
 		need_link_unlink=yes
 		AC_DEFINE(PTHREAD_POINTER_ID)
 		AC_DEFINE(USE_MACH_SEMA, 1, [...])
-		no_version_script=yes
 		libdl=
 		libgc_threads=pthreads
 		has_dtrace=yes
@@ -432,13 +428,8 @@ AC_SUBST(export_ldflags)
 # Test whenever ld supports -version-script
 AC_PROG_LD
 AC_PROG_LD_GNU
-if test "x$lt_cv_prog_gnu_ld" = "xno"; then
-   no_version_script=yes
-fi
 
 AM_ICONV()
-
-AM_CONDITIONAL(NO_VERSION_SCRIPT, test x$no_version_script = xyes)
 
 AC_CHECK_HEADERS(sys/filio.h sys/sockio.h netdb.h utime.h sys/utime.h semaphore.h sys/un.h linux/rtc.h sys/syscall.h sys/mkdev.h sys/uio.h sys/param.h sys/sysctl.h libproc.h)
 AC_CHECK_HEADERS(sys/param.h sys/socket.h sys/ipc.h sys/sem.h sys/utsname.h alloca.h ucontext.h pwd.h sys/select.h netinet/tcp.h netinet/in.h unistd.h sys/types.h link.h asm/sigcontext.h sys/inotify.h arpa/inet.h)
@@ -453,6 +444,8 @@ AC_CHECK_HEADERS(sys/user.h, [], [],
 # include <sys/param.h>
 #endif
 ])
+
+AC_CHECK_HEADERS(linux/serial.h)
 
 AC_CHECK_HEADER(zlib.h, [have_zlib=yes], [have_zlib=no])
 if test x$have_zlib = xyes; then
@@ -526,26 +519,30 @@ AC_CACHE_CHECK([for clang],
 	[])
 ])
 
+AC_ARG_ENABLE(visiblity-hidden,
+[  --disable-visibility-hidden    disable usage of -fvisiblity=hidden]
+   disable_visibility_hidden=no, disable_visibility_hidden=yes)
+
 WARN=''
 if test x"$GCC" = xyes; then
         WARN='-Wall -Wunused -Wmissing-prototypes -Wmissing-declarations -Wstrict-prototypes  -Wmissing-prototypes -Wnested-externs -Wpointer-arith -Wno-cast-qual -Wwrite-strings -Wno-switch -Wno-switch-enum -Wno-unused-value'
+
+		# We require C99 with some GNU extensions, e.g. `linux` macro
+		CFLAGS="$CFLAGS -std=gnu99"
+
 		# The runtime code does not respect ANSI C strict aliasing rules
 		CFLAGS="$CFLAGS -fno-strict-aliasing"
 
 		# We rely on signed overflow to behave
 		CFLAGS="$CFLAGS -fwrapv"
 
-		ORIG_CFLAGS=$CFLAGS
-		CFLAGS="$CFLAGS -Wdeclaration-after-statement"
-		AC_MSG_CHECKING(for -Wdeclaration-after-statement option to gcc)
-		AC_TRY_COMPILE([],[
-				return 0;
-		], [
-		   AC_MSG_RESULT(yes)
-		], [
-		   AC_MSG_RESULT(no)
-		   CFLAGS=$ORIG_CFLAGS
-		])
+		CFLAGS="$CFLAGS -DMONO_DLL_EXPORT"
+		if test x"$disable_visibility_hidden" = xno; then
+		   # Don't export any symbols by default
+		   SHARED_CFLAGS="-fvisibility=hidden"
+		   CFLAGS_FOR_EGLIB="$CFLAGS_FOR_EGLIB -fvisibility=hidden"
+		   CXXFLAGS="$CXXFLAGS -fvisibility=hidden"
+		fi
 
 		ORIG_CFLAGS=$CFLAGS
 		# Check for the normal version, since gcc ignores unknown -Wno options
@@ -677,6 +674,7 @@ if test x$werror_flag = xyes; then
 	WERROR_CFLAGS="-Werror"
 fi
 AC_SUBST([WERROR_CFLAGS])
+AC_SUBST([SHARED_CFLAGS])
 
 ac_configure_args="$ac_configure_args \"CPPFLAGS_FOR_EGLIB=$EGLIB_CPPFLAGS\" \"CFLAGS_FOR_EGLIB=$CFLAGS_FOR_EGLIB\""
 AC_CONFIG_SUBDIRS(eglib)
@@ -2514,6 +2512,12 @@ fi
 
 AC_ARG_ENABLE(bcl-opt, [  --disable-bcl-opt	BCL is compiled with no optimizations (allows accurate BCL debugging)], test_bcl_opt=$enableval, test_bcl_opt=yes)
 
+AC_ARG_ENABLE(perf-events, [  --disable-perf-events Disable using `perf` for profiling on Linux], test_perf_events=$enableval, test_perf_events=yes)
+if test "x$test_perf_events" != "xyes"; then
+	AC_DEFINE(DISABLE_PERF_EVENTS, 1, [Disable using `perf` for profiling on Linux])
+	AC_SUBST(DISABLE_PERF_EVENTS)
+fi
+
 AC_MSG_CHECKING([if big-arrays are to be enabled])
 AC_ARG_ENABLE(big-arrays,  [  --enable-big-arrays	Enable the allocation and indexing of arrays greater than Int32.MaxValue], enable_big_arrays=$enableval, enable_big_arrays=no)
 if test "x$enable_big_arrays" = "xyes" ; then
@@ -3817,6 +3821,7 @@ AC_CONFIG_COMMANDS([runtime/etc/mono/4.5/web.config],
 ],[LN_S='$LN_S'])
 
 AC_CONFIG_COMMANDS([quiet-libtool], [sed -e 's/echo "copying selected/# "copying selected/g' < libtool > libtool.tmp && mv libtool.tmp libtool && chmod a+x libtool; sed -e 's/$ECHO "copying selected/# "copying selected/g' < libtool > libtool.tmp && mv libtool.tmp libtool && chmod a+x libtool])
+AC_CONFIG_COMMANDS([nolock-libtool], [sed -e 's/lock_old_archive_extraction=yes/lock_old_archive_extraction=no/g' < libtool > libtool.tmp && mv libtool.tmp libtool && chmod a+x libtool])
 
 AC_OUTPUT([
 Makefile

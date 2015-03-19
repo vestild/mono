@@ -278,8 +278,6 @@ static gboolean conservative_stack_mark = FALSE;
 /* If set, do a plausibility check on the scan_starts before and after
    each collection */
 static gboolean do_scan_starts_check = FALSE;
-/* If set, do not run finalizers. */
-static gboolean do_not_finalize = FALSE;
 
 /*
  * If the major collector is concurrent and this is FALSE, we will
@@ -538,15 +536,6 @@ static mword objects_pinned;
  * ########  Macros and function declarations.
  * ######################################################################
  */
-
-inline static void*
-align_pointer (void *ptr)
-{
-	mword p = (mword)ptr;
-	p += sizeof (gpointer) - 1;
-	p &= ~ (sizeof (gpointer) - 1);
-	return (void*)p;
-}
 
 typedef SgenGrayQueue GrayQueue;
 
@@ -1803,13 +1792,13 @@ sgen_dump_section (GCMemSection *section, const char *type)
 	char *end = section->data + section->size;
 	char *occ_start = NULL;
 	GCVTable *vt;
-	char *old_start = NULL;	/* just for debugging */
+	char *old_start G_GNUC_UNUSED = NULL; /* just for debugging */
 
 	fprintf (heap_dump_file, "<section type=\"%s\" size=\"%lu\">\n", type, (unsigned long)section->size);
 
 	while (start < end) {
 		guint size;
-		MonoClass *class;
+		MonoClass *class G_GNUC_UNUSED;
 
 		if (!*(void**)start) {
 			if (occ_start) {
@@ -2173,13 +2162,13 @@ verify_nursery (void)
 static void
 check_nursery_is_clean (void)
 {
-	char *start, *end, *cur;
+	char *end, *cur;
 
-	start = cur = sgen_get_nursery_start ();
+	cur = sgen_get_nursery_start ();
 	end = sgen_get_nursery_end ();
 
 	while (cur < end) {
-		size_t ss, size;
+		size_t size;
 
 		if (!*(void**)cur) {
 			cur += sizeof (void*);
@@ -2189,7 +2178,6 @@ check_nursery_is_clean (void)
 		g_assert (!object_is_forwarded (cur));
 		g_assert (!object_is_pinned (cur));
 
-		ss = safe_object_get_size ((MonoObject*)cur);
 		size = ALIGN_UP (safe_object_get_size ((MonoObject*)cur));
 		verify_scan_starts (cur, cur + size);
 
@@ -3692,8 +3680,7 @@ mono_gc_invoke_finalizers (void)
 		count++;
 		/* the object is on the stack so it is pinned */
 		/*g_print ("Calling finalizer for object: %p (%s)\n", entry->object, safe_name (entry->object));*/
-		if (!do_not_finalize)
-			mono_gc_run_finalize (obj, NULL);
+		mono_gc_run_finalize (obj, NULL);
 	}
 	g_assert (!entry);
 	return count;
@@ -3837,10 +3824,11 @@ scan_thread_data (void *start_nursery, void *end_nursery, gboolean precise, Gray
 			SGEN_LOG (3, "GC disabled for thread %p, range: %p-%p, size: %td", info, info->stack_start, info->stack_end, (char*)info->stack_end - (char*)info->stack_start);
 			continue;
 		}
-		if (mono_thread_info_run_state (info) != STATE_RUNNING) {
-			SGEN_LOG (3, "Skipping non-running thread %p, range: %p-%p, size: %td (state %d)", info, info->stack_start, info->stack_end, (char*)info->stack_end - (char*)info->stack_start, mono_thread_info_run_state (info));
+		if (!mono_thread_info_is_live (info)) {
+			SGEN_LOG (3, "Skipping non-running thread %p, range: %p-%p, size: %td (state %x)", info, info->stack_start, info->stack_end, (char*)info->stack_end - (char*)info->stack_start, info->info.thread_state);
 			continue;
 		}
+		g_assert (info->suspend_done);
 		SGEN_LOG (3, "Scanning thread %p, range: %p-%p, size: %td, pinned=%zd", info, info->stack_start, info->stack_end, (char*)info->stack_end - (char*)info->stack_start, sgen_get_pinned_count ());
 		if (gc_callbacks.thread_mark_func && !conservative_stack_mark) {
 			UserCopyOrMarkData data = { NULL, queue };
@@ -4633,6 +4621,12 @@ parse_double_in_interval (const char *env_var, const char *opt_name, const char 
 	return TRUE;
 }
 
+static gboolean
+thread_in_critical_region (SgenThreadInfo *info)
+{
+	return info->in_critical_region;
+}
+
 void
 mono_gc_base_init (void)
 {
@@ -4647,7 +4641,6 @@ mono_gc_base_init (void)
 	int dummy;
 	gboolean debug_print_allowance = FALSE;
 	double allowance_ratio = 0, save_target = 0;
-	gboolean have_split_nursery = FALSE;
 	gboolean cement_enabled = TRUE;
 
 	mono_counters_init ();
@@ -4682,6 +4675,7 @@ mono_gc_base_init (void)
 	cb.thread_unregister = sgen_thread_unregister;
 	cb.thread_attach = sgen_thread_attach;
 	cb.mono_method_is_critical = (gpointer)is_critical_method;
+	cb.mono_thread_in_critical_region = thread_in_critical_region;
 #ifndef HOST_WIN32
 	cb.thread_exit = mono_gc_pthread_exit;
 	cb.mono_gc_pthread_create = (gpointer)mono_gc_pthread_create;
@@ -4755,7 +4749,6 @@ mono_gc_base_init (void)
 			sgen_simple_nursery_init (&sgen_minor_collector);
 		} else if (!strcmp (minor_collector_opt, "split")) {
 			sgen_split_nursery_init (&sgen_minor_collector);
-			have_split_nursery = TRUE;
 		} else {
 			sgen_env_var_error (MONO_GC_PARAMS_NAME, "Using `simple` instead.", "Unknown minor collector `%s'.", minor_collector_opt);
 			goto use_simple_nursery;
@@ -5067,6 +5060,8 @@ mono_gc_base_init (void)
 				enable_nursery_canaries = TRUE;
 			} else if (!strcmp (opt, "do-not-finalize")) {
 				do_not_finalize = TRUE;
+			} else if (!strcmp (opt, "log-finalizers")) {
+				log_finalizers = TRUE;
 			} else if (!sgen_bridge_handle_gc_debug (opt)) {
 				sgen_env_var_error (MONO_GC_DEBUG_NAME, "Ignoring.", "Unknown option `%s`.", opt);
 
@@ -5098,6 +5093,7 @@ mono_gc_base_init (void)
 				fprintf (stderr, "  binary-protocol=<filename>[:<file-size-limit>]\n");
 				fprintf (stderr, "  nursery-canaries\n");
 				fprintf (stderr, "  do-not-finalize\n");
+				fprintf (stderr, "  log-finalizers\n");
 				sgen_bridge_print_gc_debug_usage ();
 				fprintf (stderr, "\n");
 
@@ -5430,6 +5426,8 @@ mono_gc_get_vtable_bits (MonoClass *class)
 			break;
 		case GC_BRIDGE_OPAQUE_CLASS:
 			res = SGEN_GC_BIT_BRIDGE_OPAQUE_OBJECT;
+			break;
+		case GC_BRIDGE_TRANSPARENT_CLASS:
 			break;
 		}
 	}

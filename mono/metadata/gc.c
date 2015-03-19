@@ -59,6 +59,9 @@ static gboolean gc_disabled = FALSE;
 
 static gboolean finalizing_root_domain = FALSE;
 
+gboolean log_finalizers = FALSE;
+gboolean do_not_finalize = FALSE;
+
 #define mono_finalizer_lock() mono_mutex_lock (&finalizer_mutex)
 #define mono_finalizer_unlock() mono_mutex_unlock (&finalizer_mutex)
 static mono_mutex_t finalizer_mutex;
@@ -101,6 +104,9 @@ static gboolean suspend_finalizers = FALSE;
 void
 mono_gc_run_finalize (void *obj, void *data)
 {
+	if (do_not_finalize)
+		return;
+
 	MonoObject *exc = NULL;
 	MonoObject *o;
 #ifndef HAVE_SGEN_GC
@@ -112,6 +118,9 @@ mono_gc_run_finalize (void *obj, void *data)
 	RuntimeInvokeFunction runtime_invoke;
 
 	o = (MonoObject*)((char*)obj + GPOINTER_TO_UINT (data));
+
+	if (log_finalizers)
+		g_log ("mono-gc-finalizers", G_LOG_LEVEL_DEBUG, "<%s at %p> Starting finalizer checks.", o->vtable->klass->name, o);
 
 	if (suspend_finalizers)
 		return;
@@ -132,6 +141,9 @@ mono_gc_run_finalize (void *obj, void *data)
 
 	/* make sure the finalizer is not called again if the object is resurrected */
 	object_register_finalizer (obj, NULL);
+
+	if (log_finalizers)
+		g_log ("mono-gc-finalizers", G_LOG_LEVEL_MESSAGE, "<%s at %p> Registered finalizer as processed.", o->vtable->klass->name, o);
 
 	if (o->vtable->klass == mono_defaults.internal_thread_class) {
 		MonoInternalThread *t = (MonoInternalThread*)o;
@@ -201,6 +213,9 @@ mono_gc_run_finalize (void *obj, void *data)
 	 * create and precompile a wrapper which calls the finalize method using
 	 * a CALLVIRT.
 	 */
+	if (log_finalizers)
+		g_log ("mono-gc-finalizers", G_LOG_LEVEL_MESSAGE, "<%s at %p> Compiling finalizer.", o->vtable->klass->name, o);
+
 	if (!domain->finalize_runtime_invoke) {
 		MonoMethod *invoke = mono_marshal_get_runtime_invoke (mono_class_get_method_from_name_flags (mono_defaults.object_class, "Finalize", 0, 0), TRUE);
 
@@ -216,7 +231,13 @@ mono_gc_run_finalize (void *obj, void *data)
 				o->vtable->klass->name_space, o->vtable->klass->name);
 	}
 
+	if (log_finalizers)
+		g_log ("mono-gc-finalizers", G_LOG_LEVEL_MESSAGE, "<%s at %p> Calling finalizer.", o->vtable->klass->name, o);
+
 	runtime_invoke (o, NULL, &exc, NULL);
+
+	if (log_finalizers)
+		g_log ("mono-gc-finalizers", G_LOG_LEVEL_MESSAGE, "<%s at %p> Returned from finalizer.", o->vtable->klass->name, o);
 
 	if (exc)
 		mono_internal_thread_unhandled_exception (exc);
@@ -415,8 +436,6 @@ ves_icall_System_GC_InternalCollect (int generation)
 gint64
 ves_icall_System_GC_GetTotalMemory (MonoBoolean forceCollection)
 {
-	MONO_ARCH_SAVE_REGS;
-
 	if (forceCollection)
 		mono_gc_collect (mono_gc_max_generation ());
 	return mono_gc_get_used_size ();
@@ -425,8 +444,6 @@ ves_icall_System_GC_GetTotalMemory (MonoBoolean forceCollection)
 void
 ves_icall_System_GC_KeepAlive (MonoObject *obj)
 {
-	MONO_ARCH_SAVE_REGS;
-
 	/*
 	 * Does nothing.
 	 */
@@ -435,8 +452,7 @@ ves_icall_System_GC_KeepAlive (MonoObject *obj)
 void
 ves_icall_System_GC_ReRegisterForFinalize (MonoObject *obj)
 {
-	if (!obj)
-		mono_raise_exception (mono_get_exception_argument_null ("obj"));
+	MONO_CHECK_ARG_NULL (obj,);
 
 	object_register_finalizer (obj, mono_gc_run_finalize);
 }
@@ -444,8 +460,7 @@ ves_icall_System_GC_ReRegisterForFinalize (MonoObject *obj)
 void
 ves_icall_System_GC_SuppressFinalize (MonoObject *obj)
 {
-	if (!obj)
-		mono_raise_exception (mono_get_exception_argument_null ("obj"));
+	MONO_CHECK_ARG_NULL (obj,);
 
 	/* delegates have no finalizers, but we register them to deal with the
 	 * unmanaged->managed trampoline. We don't let the user suppress it
@@ -491,8 +506,10 @@ void
 ves_icall_System_GC_register_ephemeron_array (MonoObject *array)
 {
 #ifdef HAVE_SGEN_GC
-	if (!mono_gc_ephemeron_array_add (array))
-		mono_raise_exception (mono_object_domain (array)->out_of_memory_ex);
+	if (!mono_gc_ephemeron_array_add (array)) {
+		mono_set_pending_exception (mono_object_domain (array)->out_of_memory_ex);
+		return;
+	}
 #endif
 }
 
@@ -828,14 +845,12 @@ mono_gchandle_set_target (guint32 gchandle, MonoObject *obj)
 	guint slot = gchandle >> 3;
 	guint type = (gchandle & 7) - 1;
 	HandleData *handles = &gc_handles [type];
-	MonoObject *old_obj = NULL;
 
 	if (type > 3)
 		return;
 	lock_handles (handles);
 	if (slot < handles->size && (handles->bitmap [slot / 32] & (1 << (slot % 32)))) {
 		if (handles->type <= HANDLE_WEAK_TRACK) {
-			old_obj = handles->entries [slot];
 			if (handles->entries [slot])
 				mono_gc_weak_link_remove (&handles->entries [slot], handles->type == HANDLE_WEAK_TRACK);
 			if (obj)

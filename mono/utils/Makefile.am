@@ -1,6 +1,6 @@
 noinst_LTLIBRARIES = libmonoutils.la
 
-AM_CPPFLAGS = -I$(top_srcdir) -I$(top_srcdir)/mono $(LIBGC_CPPFLAGS) $(GLIB_CFLAGS)
+AM_CPPFLAGS = -I$(top_srcdir) -I$(top_srcdir)/mono $(LIBGC_CPPFLAGS) $(GLIB_CFLAGS) $(SHARED_CFLAGS)
 
 if ENABLE_DTRACE
 
@@ -99,6 +99,7 @@ monoutils_sources = \
 	mono-linked-list-set.c	\
 	mono-linked-list-set.h	\
 	mono-threads.c	\
+	mono-threads-state-machine.c	\
 	mono-threads-posix.c	\
 	mono-threads-mach.c	\
 	mono-threads-mach-helper.c	\
@@ -123,12 +124,16 @@ monoutils_sources = \
 	mono-conc-hashtable.c	\
 	sha1.h		\
 	sha1.c	\
+	json.h	\
+	json.c	\
 	networking.c	\
 	networking-posix.c	\
 	networking-fallback.c	\
 	networking-missing.c	\
 	networking-windows.c	\
-	networking.h
+	networking.h	\
+	mono-rand.c	\
+	mono-rand.h
 
 arch_sources = 
 

@@ -275,8 +275,6 @@ mono_runtime_class_init_full (MonoVTable *vtable, gboolean raise_exception)
 	MonoClass *klass;
 	gchar *full_name;
 
-	MONO_ARCH_SAVE_REGS;
-
 	if (vtable->initialized)
 		return NULL;
 
@@ -1882,7 +1880,6 @@ mono_class_create_runtime_vtable (MonoDomain *domain, MonoClass *class, gboolean
 	size_t imt_table_bytes;
 	int gc_bits;
 	guint32 vtable_size, class_size;
-	guint32 cindex;
 	gpointer iter;
 	gpointer *interface_offsets;
 
@@ -2025,7 +2022,6 @@ mono_class_create_runtime_vtable (MonoDomain *domain, MonoClass *class, gboolean
 		mono_stats.class_static_data_size += class_size;
 	}
 
-	cindex = -1;
 	iter = NULL;
 	while ((field = mono_class_get_fields (class, &iter))) {
 		if (!(field->type->attrs & FIELD_ATTRIBUTE_STATIC))
@@ -4395,6 +4391,7 @@ mono_object_allocate (size_t size, MonoVTable *vtable)
 	return o;
 }
 
+#ifndef HAVE_SGEN_GC
 /**
  * mono_object_allocate_ptrfree:
  * @size: number of bytes to allocate
@@ -4409,6 +4406,7 @@ mono_object_allocate_ptrfree (size_t size, MonoVTable *vtable)
 	ALLOC_PTRFREE (o, vtable, size);
 	return o;
 }
+#endif
 
 static inline void *
 mono_object_allocate_spec (size_t size, MonoVTable *vtable)
@@ -4435,7 +4433,6 @@ mono_object_new (MonoDomain *domain, MonoClass *klass)
 {
 	MonoVTable *vtable;
 
-	MONO_ARCH_SAVE_REGS;
 	vtable = mono_class_vtable (domain, klass);
 	if (!vtable)
 		return NULL;
@@ -4453,7 +4450,6 @@ mono_object_new_pinned (MonoDomain *domain, MonoClass *klass)
 {
 	MonoVTable *vtable;
 
-	MONO_ARCH_SAVE_REGS;
 	vtable = mono_class_vtable (domain, klass);
 	if (!vtable)
 		return NULL;
@@ -4477,8 +4473,6 @@ mono_object_new_specific (MonoVTable *vtable)
 {
 	MonoObject *o;
 
-	MONO_ARCH_SAVE_REGS;
-	
 	/* check for is_com_object for COM Interop */
 	if (mono_vtable_is_remote (vtable) || mono_class_is_com_object (vtable->klass))
 	{
@@ -4681,8 +4675,6 @@ mono_array_full_copy (MonoArray *src, MonoArray *dest)
 	uintptr_t size;
 	MonoClass *klass = src->obj.vtable->klass;
 
-	MONO_ARCH_SAVE_REGS;
-
 	g_assert (klass == dest->obj.vtable->klass);
 
 	size = mono_array_length (src);
@@ -4717,8 +4709,6 @@ mono_array_clone_in_domain (MonoDomain *domain, MonoArray *array)
 	uintptr_t size, i;
 	uintptr_t *sizes;
 	MonoClass *klass = array->obj.vtable->klass;
-
-	MONO_ARCH_SAVE_REGS;
 
 	if (array->bounds == NULL) {
 		size = mono_array_length (array);
@@ -4929,8 +4919,6 @@ mono_array_new (MonoDomain *domain, MonoClass *eclass, uintptr_t n)
 {
 	MonoClass *ac;
 
-	MONO_ARCH_SAVE_REGS;
-
 	ac = mono_array_class_get (eclass, 1);
 	g_assert (ac);
 
@@ -4951,8 +4939,6 @@ mono_array_new_specific (MonoVTable *vtable, uintptr_t n)
 	MonoObject *o;
 	MonoArray *ao;
 	uintptr_t byte_len;
-
-	MONO_ARCH_SAVE_REGS;
 
 	if (G_UNLIKELY (n > MONO_ARRAY_MAX_INDEX)) {
 		arith_overflow ();
@@ -5167,8 +5153,6 @@ MonoString*
 mono_string_new_wrapper (const char *text)
 {
 	MonoDomain *domain = mono_domain_get ();
-
-	MONO_ARCH_SAVE_REGS;
 
 	if (text)
 		return mono_string_new (domain, text);
@@ -5471,22 +5455,32 @@ static MonoString*
 mono_string_is_interned_lookup (MonoString *str, int insert)
 {
 	MonoGHashTable *ldstr_table;
-	MonoString *res;
+	MonoString *s, *res;
 	MonoDomain *domain;
 	
 	domain = ((MonoObject *)str)->vtable->domain;
 	ldstr_table = domain->ldstr_table;
 	ldstr_lock ();
-	if ((res = mono_g_hash_table_lookup (ldstr_table, str))) {
+	res = mono_g_hash_table_lookup (ldstr_table, str);
+	if (res) {
 		ldstr_unlock ();
 		return res;
 	}
 	if (insert) {
-		str = mono_string_get_pinned (str);
-		if (str)
-			mono_g_hash_table_insert (ldstr_table, str, str);
+		/* Allocate outside the lock */
 		ldstr_unlock ();
-		return str;
+		s = mono_string_get_pinned (str);
+		if (s) {
+			ldstr_lock ();
+			res = mono_g_hash_table_lookup (ldstr_table, str);
+			if (res) {
+				ldstr_unlock ();
+				return res;
+			}
+			mono_g_hash_table_insert (ldstr_table, s, s);
+			ldstr_unlock ();
+		}
+		return s;
 	} else {
 		LDStrInfo ldstr_info;
 		ldstr_info.orig_domain = domain;
@@ -5545,8 +5539,6 @@ mono_string_intern (MonoString *str)
 MonoString*
 mono_ldstr (MonoDomain *domain, MonoImage *image, guint32 idx)
 {
-	MONO_ARCH_SAVE_REGS;
-
 	if (image->dynamic) {
 		MonoString *str = mono_lookup_dynamic_token (image, MONO_TOKEN_STRING | idx, NULL);
 		return str;
@@ -6294,7 +6286,6 @@ void
 mono_delegate_ctor_with_method (MonoObject *this, MonoObject *target, gpointer addr, MonoMethod *method)
 {
 	MonoDelegate *delegate = (MonoDelegate *)this;
-	MonoClass *class;
 
 	g_assert (this);
 	g_assert (addr);
@@ -6302,7 +6293,6 @@ mono_delegate_ctor_with_method (MonoObject *this, MonoObject *target, gpointer a
 	if (method)
 		delegate->method = method;
 
-	class = this->vtable->klass;
 	mono_stats.delegate_creations++;
 
 #ifndef DISABLE_REMOTING
@@ -6367,7 +6357,7 @@ mono_method_call_message_new (MonoMethod *method, gpointer *params, MonoMethod *
 	MonoDomain *domain = mono_domain_get ();
 	MonoMethodSignature *sig = mono_method_signature (method);
 	MonoMethodMessage *msg;
-	int i, count, type;
+	int i, count;
 
 	msg = (MonoMethodMessage *)mono_object_new (domain, mono_defaults.mono_method_message_class); 
 	
@@ -6389,7 +6379,6 @@ mono_method_call_message_new (MonoMethod *method, gpointer *params, MonoMethod *
 		else 
 			vpos = params [i];
 
-		type = sig->params [i]->type;
 		class = mono_class_from_mono_type (sig->params [i]);
 
 		if (class->valuetype)

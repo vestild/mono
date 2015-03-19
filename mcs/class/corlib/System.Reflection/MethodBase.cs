@@ -98,6 +98,11 @@ namespace System.Reflection {
 			return GetParameters ();
 		}
 
+		internal ParameterInfo[] GetParametersNoCopy ()
+		{
+			return GetParametersInternal ();
+		}
+
 		internal virtual int GetParametersCount ()
 		{
 			// Override me
@@ -272,19 +277,19 @@ namespace System.Reflection {
 		
 		public virtual bool IsSecurityCritical {
 			get {
-				throw new NotImplementedException ();
+				throw new NotSupportedException ();
 			}
 		}
 		
 		public virtual bool IsSecuritySafeCritical {
 			get {
-				throw new NotImplementedException ();
+				throw new NotSupportedException ();
 			}
 		}
 
 		public virtual bool IsSecurityTransparent {
 			get {
-				throw new NotImplementedException ();
+				throw new NotSupportedException ();
 			}
 		}
 

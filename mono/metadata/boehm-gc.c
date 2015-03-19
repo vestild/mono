@@ -148,7 +148,22 @@ mono_gc_base_init (void)
 	/* If GC_no_dls is set to true, GC_find_limit is not called. This causes a seg fault on Android. */
 	GC_no_dls = TRUE;
 #endif
+	{
+		if ((env = g_getenv ("MONO_GC_DEBUG"))) {
+			char **opts = g_strsplit (env, ",", -1);
+			for (char **ptr = opts; ptr && *ptr; ptr ++) {
+				char *opt = *ptr;
+				if (!strcmp (opt, "do-not-finalize")) {
+					do_not_finalize = 1;
+				} else if (!strcmp (opt, "log-finalizers")) {
+					log_finalizers = 1;
+				}
+			}
+		}
+	}
+
 	GC_init ();
+
 	GC_oom_fn = mono_gc_out_of_memory;
 	GC_set_warn_proc (mono_gc_warning);
 	GC_finalize_on_demand = 1;
@@ -461,6 +476,8 @@ on_gc_notification (GCEventType event)
 		gc_stats.major_gc_time += mono_100ns_ticks () - gc_start_time;
 		mono_trace_message (MONO_TRACE_GC, "gc took %d usecs", (mono_100ns_ticks () - gc_start_time) / 10);
 		break;
+	default:
+		break;
 	}
 
 	mono_profiler_gc_event (e, 0);
@@ -747,9 +764,10 @@ create_allocator (int atype, int tls_key)
 		csig->params [0] = &mono_defaults.int_class->byval_arg;
 		csig->params [1] = &mono_defaults.int32_class->byval_arg;
 	} else {
-		csig = mono_metadata_signature_alloc (mono_defaults.corlib, 1);
+		csig = mono_metadata_signature_alloc (mono_defaults.corlib, 2);
 		csig->ret = &mono_defaults.object_class->byval_arg;
 		csig->params [0] = &mono_defaults.int_class->byval_arg;
+		csig->params [1] = &mono_defaults.int32_class->byval_arg;
 	}
 
 	mb = mono_mb_new (mono_defaults.object_class, "Alloc", MONO_WRAPPER_ALLOC);
@@ -767,15 +785,7 @@ create_allocator (int atype, int tls_key)
 		mono_mb_emit_byte (mb, MONO_CEE_ADD);
 		mono_mb_emit_stloc (mb, bytes_var);
 	} else {
-		/* bytes = vtable->klass->instance_size */
-		mono_mb_emit_ldarg (mb, 0);
-		mono_mb_emit_icon (mb, G_STRUCT_OFFSET (MonoVTable, klass));
-		mono_mb_emit_byte (mb, MONO_CEE_ADD);
-		mono_mb_emit_byte (mb, MONO_CEE_LDIND_I);
-		mono_mb_emit_icon (mb, G_STRUCT_OFFSET (MonoClass, instance_size));
-		mono_mb_emit_byte (mb, MONO_CEE_ADD);
-		/* FIXME: assert instance_size stays a 4 byte integer */
-		mono_mb_emit_byte (mb, MONO_CEE_LDIND_U4);
+		mono_mb_emit_ldarg (mb, 1);
 		mono_mb_emit_stloc (mb, bytes_var);
 	}
 
@@ -961,7 +971,7 @@ mono_gc_is_critical_method (MonoMethod *method)
  */
 
 MonoMethod*
-mono_gc_get_managed_allocator (MonoClass *klass, gboolean for_box)
+mono_gc_get_managed_allocator (MonoClass *klass, gboolean for_box, gboolean known_instance_size)
 {
 	int offset = -1;
 	int atype;
@@ -1058,7 +1068,7 @@ mono_gc_is_critical_method (MonoMethod *method)
 }
 
 MonoMethod*
-mono_gc_get_managed_allocator (MonoClass *klass, gboolean for_box)
+mono_gc_get_managed_allocator (MonoClass *klass, gboolean for_box, gboolean known_instance_size)
 {
 	return NULL;
 }
@@ -1089,6 +1099,12 @@ mono_gc_get_write_barrier (void)
 }
 
 #endif
+
+int
+mono_gc_get_aligned_size_for_allocator (int size)
+{
+	return size;
+}
 
 const char *
 mono_gc_get_gc_name (void)

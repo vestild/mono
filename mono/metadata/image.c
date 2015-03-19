@@ -232,7 +232,6 @@ mono_image_ensure_section_idx (MonoImage *image, int section)
 {
 	MonoCLIImageInfo *iinfo = image->image_info;
 	MonoSectionTable *sect;
-	gboolean writable;
 	
 	g_return_val_if_fail (section < iinfo->cli_section_count, FALSE);
 
@@ -241,8 +240,6 @@ mono_image_ensure_section_idx (MonoImage *image, int section)
 
 	sect = &iinfo->cli_section_tables [section];
 	
-	writable = sect->st_flags & SECT_FLAGS_MEM_WRITE;
-
 	if (sect->st_raw_data_ptr + sect->st_raw_data_size > image->raw_data_len)
 		return FALSE;
 #ifdef HOST_WIN32
@@ -478,7 +475,7 @@ load_tables (MonoImage *image)
 {
 	const char *heap_tables = image->heap_tables.data;
 	const guint32 *rows;
-	guint64 valid_mask, sorted_mask;
+	guint64 valid_mask;
 	int valid = 0, table;
 	int heap_sizes;
 	
@@ -488,7 +485,6 @@ load_tables (MonoImage *image)
 	image->idx_blob_wide   = ((heap_sizes & 0x04) == 4);
 	
 	valid_mask = read64 (heap_tables + 8);
-	sorted_mask = read64 (heap_tables + 16);
 	rows = (const guint32 *) (heap_tables + 24);
 	
 	for (table = 0; table < 64; table++){
@@ -503,9 +499,6 @@ load_tables (MonoImage *image)
 		} else {
 			image->tables [table].rows = read32 (rows);
 		}
-		/*if ((sorted_mask & ((guint64) 1 << table)) == 0){
-			g_print ("table %s (0x%02x) is sorted\n", mono_meta_table_name (table), table);
-		}*/
 		rows++;
 		valid++;
 	}
@@ -907,10 +900,8 @@ gboolean
 mono_image_load_cli_data (MonoImage *image)
 {
 	MonoCLIImageInfo *iinfo;
-	MonoDotNetHeader *header;
 
 	iinfo = image->image_info;
-	header = &iinfo->cli_header;
 
 	/* Load the CLI header */
 	if (!load_cli_header (image, iinfo))
@@ -1652,7 +1643,9 @@ mono_image_close_except_pools (MonoImage *image)
 	free_hash (image->native_wrapper_aot_cache);
 	free_hash (image->pinvoke_scopes);
 	free_hash (image->pinvoke_scope_filenames);
-	free_hash (image->gsharedvt_types);
+	for (i = 0; i < image->gshared_types_len; ++i)
+		free_hash (image->gshared_types [i]);
+	g_free (image->gshared_types);
 
 	/* The ownership of signatures is not well defined */
 	g_hash_table_destroy (image->memberref_signatures);

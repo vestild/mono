@@ -580,6 +580,7 @@ mono_print_ins_index (int i, MonoInst *ins)
 	case OP_IOR_IMM:
 	case OP_IXOR_IMM:
 	case OP_SUB_IMM:
+	case OP_STORE_MEMBASE_IMM:
 		printf (" [%d]", (int)ins->inst_imm);
 		break;
 	case OP_ADD_IMM:
@@ -778,10 +779,8 @@ spill_vreg (MonoCompile *cfg, MonoBasicBlock *bb, MonoInst **last, MonoInst *ins
 {
 	MonoInst *load;
 	int i, sel, spill;
-	int *symbolic;
 	MonoRegState *rs = cfg->rs;
 
-	symbolic = rs->symbolic [bank];
 	sel = rs->vassign [reg];
 
 	/* the vreg we need to spill lives in another logical reg bank */
@@ -826,10 +825,7 @@ get_register_spilling (MonoCompile *cfg, MonoBasicBlock *bb, MonoInst **last, Mo
 	MonoInst *load;
 	int i, sel, spill, num_sregs;
 	int sregs [MONO_MAX_SRC_REGS];
-	int *symbolic;
 	MonoRegState *rs = cfg->rs;
-
-	symbolic = rs->symbolic [bank];
 
 	g_assert (bank < MONO_NUM_REGBANKS);
 
@@ -1301,44 +1297,6 @@ mono_local_regalloc (MonoCompile *cfg, MonoBasicBlock *bb)
 			ins->dreg = -1;
 		}
 
-		if (spec [MONO_INST_CLOB] == 'c' && MONO_IS_CALL (ins)) {
-			/* A call instruction implicitly uses all registers in call->out_ireg_args */
-
-			MonoCallInst *call = (MonoCallInst*)ins;
-			GSList *list;
-
-			list = call->out_ireg_args;
-			if (list) {
-				while (list) {
-					guint32 regpair;
-					int reg, hreg;
-
-					regpair = (guint32)(gssize)(list->data);
-					hreg = regpair >> 24;
-					reg = regpair & 0xffffff;
-
-					//reginfo [reg].prev_use = reginfo [reg].last_use;
-					//reginfo [reg].last_use = i;
-
-					list = g_slist_next (list);
-				}
-			}
-
-			list = call->out_freg_args;
-			if (list) {
-				while (list) {
-					guint32 regpair;
-					int reg, hreg;
-
-					regpair = (guint32)(gssize)(list->data);
-					hreg = regpair >> 24;
-					reg = regpair & 0xffffff;
-
-					list = g_slist_next (list);
-				}
-			}
-		}
-
 		++i;
 	}
 
@@ -1346,7 +1304,7 @@ mono_local_regalloc (MonoCompile *cfg, MonoBasicBlock *bb)
 
 	DEBUG (print_regtrack (reginfo, rs->next_vreg));
 	MONO_BB_FOR_EACH_INS_REVERSE_SAFE (bb, prev, ins) {
-		int prev_dreg, clob_dreg;
+		int prev_dreg;
 		int dest_dreg, clob_reg;
 		int dest_sregs [MONO_MAX_SRC_REGS], prev_sregs [MONO_MAX_SRC_REGS];
 		int dreg_high, sreg1_high;
@@ -1359,7 +1317,6 @@ mono_local_regalloc (MonoCompile *cfg, MonoBasicBlock *bb)
 		spec_src1 = spec [MONO_INST_SRC1];
 		spec_dest = spec [MONO_INST_DEST];
 		prev_dreg = -1;
-		clob_dreg = -1;
 		clob_reg = -1;
 		dest_dreg = -1;
 		dreg_high = -1;
@@ -1517,7 +1474,6 @@ mono_local_regalloc (MonoCompile *cfg, MonoBasicBlock *bb)
 
 					prev_dreg = ins->dreg;
 					assign_reg (cfg, rs, ins->dreg, new_dest, 0);
-					clob_dreg = ins->dreg;
 					create_copy_ins (cfg, bb, tmp, dest_sreg, new_dest, ins, ip, 0);
 					mono_regstate_free_int (rs, dest_sreg);
 					need_spill = FALSE;
@@ -2536,12 +2492,8 @@ mono_opcode_to_type (int opcode, int cmp_opcode)
 gboolean
 mono_is_regsize_var (MonoType *t)
 {
-	if (t->byref)
-		return TRUE;
-	t = mono_type_get_underlying_type (t);
+	t = mini_type_get_underlying_type (NULL, t);
 	switch (t->type) {
-	case MONO_TYPE_BOOLEAN:
-	case MONO_TYPE_CHAR:
 	case MONO_TYPE_I1:
 	case MONO_TYPE_U1:
 	case MONO_TYPE_I2:
@@ -2757,6 +2709,55 @@ mini_exception_id_by_name (const char *name)
 		return MONO_EXC_ARGUMENT;
 	g_error ("Unknown intrinsic exception %s\n", name);
 	return -1;
+}
+
+gboolean
+mini_type_is_hfa (MonoType *t, int *out_nfields, int *out_esize)
+{
+	MonoClass *klass;
+	gpointer iter;
+	MonoClassField *field;
+	MonoType *ftype, *prev_ftype = NULL;
+	int nfields = 0;
+
+	klass = mono_class_from_mono_type (t);
+	iter = NULL;
+	while ((field = mono_class_get_fields (klass, &iter))) {
+		if (field->type->attrs & FIELD_ATTRIBUTE_STATIC)
+			continue;
+		ftype = mono_field_get_type (field);
+		ftype = mini_native_type_replace_type (ftype);
+
+		if (MONO_TYPE_ISSTRUCT (ftype)) {
+			int nested_nfields, nested_esize;
+
+			if (!mini_type_is_hfa (ftype, &nested_nfields, &nested_esize))
+				return FALSE;
+			if (nested_esize == 4)
+				ftype = &mono_defaults.single_class->byval_arg;
+			else
+				ftype = &mono_defaults.double_class->byval_arg;
+			if (prev_ftype && prev_ftype->type != ftype->type)
+				return FALSE;
+			prev_ftype = ftype;
+			nfields += nested_nfields;
+			// FIXME: Nested float structs are aligned to 8 bytes
+			if (ftype->type == MONO_TYPE_R4)
+				return FALSE;
+		} else {
+			if (!(!ftype->byref && (ftype->type == MONO_TYPE_R4 || ftype->type == MONO_TYPE_R8)))
+				return FALSE;
+			if (prev_ftype && prev_ftype->type != ftype->type)
+				return FALSE;
+			prev_ftype = ftype;
+			nfields ++;
+		}
+	}
+	if (nfields == 0 || nfields > 4)
+		return FALSE;
+	*out_nfields = nfields;
+	*out_esize = prev_ftype->type == MONO_TYPE_R4 ? 4 : 8;
+	return TRUE;
 }
 
 #endif /* DISABLE_JIT */

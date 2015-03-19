@@ -96,9 +96,12 @@ typedef struct MonoAotModule {
 	gboolean plt_inited;
 	guint8 *mem_begin;
 	guint8 *mem_end;
+	/* Points to either the start of JIT compiler or LLVM compiled code */
 	guint8 *code;
-	guint8 *code_start;
-	guint8 *code_end;
+	guint8 *jit_code_start;
+	guint8 *jit_code_end;
+	guint8 *llvm_code_start;
+	guint8 *llvm_code_end;
 	guint8 *plt;
 	guint8 *plt_end;
 	guint8 *blob;
@@ -200,6 +203,9 @@ static mono_mutex_t aot_page_mutex;
 static void
 init_plt (MonoAotModule *info);
 
+static void
+compute_llvm_code_range (MonoAotModule *amodule, guint8 **code_start, guint8 **code_end);
+
 /*****************************************************/
 /*                 AOT RUNTIME                       */
 /*****************************************************/
@@ -298,12 +304,12 @@ static guint32
 mono_aot_get_offset (guint32 *table, int index)
 {
 	int i, group, ngroups, index_entry_size;
-	int start_offset, offset, noffsets, group_size;
+	int start_offset, offset, group_size;
 	guint8 *data_start, *p;
 	guint32 *index32 = NULL;
 	guint16 *index16 = NULL;
 	
-	noffsets = table [0];
+	/* noffsets = table [0]; */
 	group_size = table [1];
 	ngroups = table [2];
 	index_entry_size = table [3];
@@ -461,7 +467,7 @@ decode_klass_ref (MonoAotModule *module, guint8 *buf, guint8 **endbuf)
 		int type = decode_value (p, &p);
 		int num = decode_value (p, &p);
 		gboolean has_container = decode_value (p, &p);
-		int serial = 0;
+		MonoTypeEnum gshared_constraint = 0;
 
 		if (has_container) {
 			gboolean is_method = decode_value (p, &p);
@@ -484,19 +490,19 @@ decode_klass_ref (MonoAotModule *module, guint8 *buf, guint8 **endbuf)
 				container = class_def->generic_container;
 			}
 		} else {
-			serial = decode_value (p, &p);
+			gshared_constraint = decode_value (p, &p);
 		}
 
 		t = g_new0 (MonoType, 1);
 		t->type = type;
 		if (container) {
 			t->data.generic_param = mono_generic_container_get_param (container, num);
-			g_assert (serial == 0);
+			g_assert (gshared_constraint == 0);
 		} else {
 			/* Anonymous */
 			MonoGenericParam *par = (MonoGenericParam*)mono_image_alloc0 (module->assembly->image, sizeof (MonoGenericParamFull));
 			par->num = num;
-			par->serial = serial;
+			par->gshared_constraint = gshared_constraint;
 			// FIXME:
 			par->image = mono_defaults.corlib;
 			t->data.generic_param = par;
@@ -688,7 +694,7 @@ decode_signature_with_target (MonoAotModule *module, MonoMethodSignature *target
 {
 	MonoMethodSignature *sig;
 	guint32 flags;
-	int i, param_count, call_conv, gen_param_count = 0;
+	int i, param_count, call_conv;
 	guint8 *p = buf;
 	gboolean hasthis, explicit_this, has_gen_params;
 
@@ -700,7 +706,7 @@ decode_signature_with_target (MonoAotModule *module, MonoMethodSignature *target
 	call_conv = flags & 0x0F;
 
 	if (has_gen_params)
-		gen_param_count = decode_value (p, &p);
+		/* gen_param_count = */ decode_value (p, &p);
 	param_count = decode_value (p, &p);
 	if (target && param_count != target->param_count)
 		return NULL;
@@ -1914,7 +1920,8 @@ load_aot_module (MonoAssembly *assembly, gpointer user_data)
 	/* Mask out thumb interop bit */
 	amodule->code = (void*)((mgreg_t)amodule->code & ~1);
 #endif
-	amodule->code_end = info->methods_end;
+	amodule->jit_code_start = info->jit_code_start;
+	amodule->jit_code_end = info->jit_code_end;
 	amodule->method_info_offsets = info->method_info_offsets;
 	amodule->ex_info_offsets = info->ex_info_offsets;
 	amodule->class_info_offsets = info->class_info_offsets;
@@ -1937,7 +1944,6 @@ load_aot_module (MonoAssembly *assembly, gpointer user_data)
 	amodule->thumb_end = info->thumb_end;
 
 	/* Compute code_offsets from the method addresses */
-	amodule->code_start = amodule->code;
 	amodule->code_offsets = g_malloc0 (amodule->info.nmethods * sizeof (gint32));
 	for (i = 0; i < amodule->info.nmethods; ++i) {
 		/* method_addresses () contains a table of branches, since the ios linker can update those correctly */
@@ -1949,17 +1955,6 @@ load_aot_module (MonoAssembly *assembly, gpointer user_data)
 			amodule->code_offsets [i] = 0xffffffff;
 		else
 			amodule->code_offsets [i] = (char*)addr - (char*)amodule->code;
-		/*
-		 * FIXME: When using a separate llvm object file,
-		 * need to add separate symbols to denote the beginning and
-		 * end of llvm compiled code.
-		 */
-		// FIXME: Update both code and code_end
-		// FIXME: Last method
-		if ((guint8*)addr > (guint8*)amodule->code_end)
-			amodule->code_end = addr;
-		if ((guint8*)addr < (guint8*)amodule->code_start)
-			amodule->code_start = addr;
 	}
 
 	if (make_unreadable) {
@@ -1981,15 +1976,25 @@ load_aot_module (MonoAssembly *assembly, gpointer user_data)
 #endif
 	}
 
+	/* Compute the boundaries of LLVM code */
+	if (info->flags & MONO_AOT_FILE_FLAG_WITH_LLVM)
+		compute_llvm_code_range (amodule, &amodule->llvm_code_start, &amodule->llvm_code_end);
+
 	mono_aot_lock ();
 
-	aot_code_low_addr = MIN (aot_code_low_addr, (gsize)amodule->code_start);
-	aot_code_high_addr = MAX (aot_code_high_addr, (gsize)amodule->code_end);
+	aot_code_low_addr = MIN (aot_code_low_addr, (gsize)amodule->jit_code_start);
+	aot_code_high_addr = MAX (aot_code_high_addr, (gsize)amodule->jit_code_end);
+	if (amodule->llvm_code_start) {
+		aot_code_low_addr = MIN (aot_code_low_addr, (gsize)amodule->llvm_code_start);
+		aot_code_high_addr = MAX (aot_code_high_addr, (gsize)amodule->llvm_code_end);
+	}
 
 	g_hash_table_insert (aot_modules, assembly, amodule);
 	mono_aot_unlock ();
 
-	mono_jit_info_add_aot_module (assembly->image, amodule->code, amodule->code_end);
+	mono_jit_info_add_aot_module (assembly->image, amodule->jit_code_start, amodule->jit_code_end);
+	if (amodule->llvm_code_start)
+		mono_jit_info_add_aot_module (assembly->image, amodule->llvm_code_start, amodule->llvm_code_end);
 
 	assembly->image->aot_module = amodule;
 
@@ -2343,6 +2348,42 @@ mono_aot_get_class_from_name (MonoImage *image, const char *name_space, const ch
 	return TRUE;
 }
 
+/* Compute the boundaries of the LLVM code for AMODULE. */
+static void
+compute_llvm_code_range (MonoAotModule *amodule, guint8 **code_start, guint8 **code_end)
+{
+	guint8 *p;
+	int version, fde_count;
+	gint32 *table;
+
+	g_assert (amodule->mono_eh_frame);
+
+	p = amodule->mono_eh_frame;
+
+	/* p points to data emitted by LLVM in DwarfException::EmitMonoEHFrame () */
+
+	/* Header */
+	version = *p;
+	g_assert (version == 3);
+	p ++;
+	p ++;
+	p = ALIGN_PTR_TO (p, 4);
+
+	fde_count = *(guint32*)p;
+	p += 4;
+	table = (gint32*)p;
+
+	if (fde_count > 1) {
+		/* mono_aot_personality () */
+		g_assert (table [0] == -1);
+		*code_start = amodule->code + amodule->code_offsets [table [2]];
+		*code_end = amodule->code + amodule->code_offsets [table [(fde_count - 1) * 2]] + table [fde_count * 2];
+	} else {
+		*code_start = NULL;
+		*code_end = NULL;
+	}
+}
+
 /*
  * decode_mono_eh_frame:
  *
@@ -2362,7 +2403,7 @@ decode_llvm_mono_eh_frame (MonoAotModule *amodule, MonoDomain *domain,
 	guint8 *fde, *cie, *code_start, *code_end;
 	int version, fde_count;
 	gint32 *table;
-	int i, j, pos, left, right, offset, offset1, offset2, code_len, func_encoding;
+	int i, j, pos, left, right, offset, offset1, offset2, code_len;
 	MonoJitExceptionInfo *ei;
 	guint32 fde_len, ei_len, nested_len, nindex;
 	gpointer *type_info;
@@ -2379,7 +2420,7 @@ decode_llvm_mono_eh_frame (MonoAotModule *amodule, MonoDomain *domain,
 	version = *p;
 	g_assert (version == 3);
 	p ++;
-	func_encoding = *p;
+	/* func_encoding = *p; */
 	p ++;
 	p = ALIGN_PTR_TO (p, 4);
 
@@ -2401,7 +2442,7 @@ decode_llvm_mono_eh_frame (MonoAotModule *amodule, MonoDomain *domain,
 		g_assert (table [(pos * 2)] != -1);
 		offset1 = amodule->code_offsets [table [(pos * 2)]];
 		if (pos + 1 == fde_count) {
-			offset2 = amodule->code_end - amodule->code;
+			offset2 = amodule->llvm_code_end - amodule->llvm_code_start;
 		} else {
 			g_assert (table [(pos + 1) * 2] != -1);
 			offset2 = amodule->code_offsets [table [(pos + 1) * 2]];
@@ -2557,7 +2598,7 @@ decode_exception_debug_info (MonoAotModule *amodule, MonoDomain *domain,
 	gboolean has_generic_jit_info, has_dwarf_unwind_info, has_clauses, has_seq_points, has_try_block_holes, has_arch_eh_jit_info;
 	gboolean from_llvm, has_gc_map;
 	guint8 *p;
-	int generic_info_size, try_holes_info_size, num_holes, arch_eh_jit_info_size;
+	int try_holes_info_size, num_holes;
 	int this_reg = 0, this_offset = 0;
 	gboolean async;
 
@@ -2581,12 +2622,8 @@ decode_exception_debug_info (MonoAotModule *amodule, MonoDomain *domain,
 	} else {
 		unwind_info = decode_value (p, &p);
 	}
-	if (has_generic_jit_info) {
+	if (has_generic_jit_info)
 		flags |= JIT_INFO_HAS_GENERIC_JIT_INFO;
-		generic_info_size = sizeof (MonoGenericJitInfo);
-	} else {
-		generic_info_size = 0;
-	}
 
 	if (has_try_block_holes) {
 		num_holes = decode_value (p, &p);
@@ -2598,11 +2635,8 @@ decode_exception_debug_info (MonoAotModule *amodule, MonoDomain *domain,
 
 	if (has_arch_eh_jit_info) {
 		flags |= JIT_INFO_HAS_ARCH_EH_INFO;
-		arch_eh_jit_info_size = sizeof (MonoArchEHJitInfo);
 		/* Overwrite the original code_len which includes alignment padding */
 		code_len = decode_value (p, &p);
-	} else {
-		arch_eh_jit_info_size = 0;
 	}
 
 	/* Exception table */
@@ -2741,6 +2775,7 @@ decode_exception_debug_info (MonoAotModule *amodule, MonoDomain *domain,
 					entry->from = decode_value (p, &p);
 				entry->to = decode_value (p, &p);
 			}
+			gi->has_this = 1;
 		} else {
 			if (from_llvm) {
 				gi->has_this = this_reg != -1;
@@ -2816,6 +2851,13 @@ decode_exception_debug_info (MonoAotModule *amodule, MonoDomain *domain,
 	return jinfo;
 }
 
+static gboolean
+amodule_contains_code_addr (MonoAotModule *amodule, guint8 *code)
+{
+	return (code >= amodule->jit_code_start && code <= amodule->jit_code_end) ||
+		(code >= amodule->llvm_code_start && code <= amodule->llvm_code_end);
+}
+
 /*
  * mono_aot_get_unwind_info:
  *
@@ -2835,13 +2877,13 @@ mono_aot_get_unwind_info (MonoJitInfo *ji, guint32 *unwind_info_len)
 	g_assert (amodule);
 	g_assert (ji->from_aot);
 
-	if (!(code >= amodule->code && code <= amodule->code_end)) {
+	if (!amodule_contains_code_addr (amodule, code)) {
 		/* ji belongs to a different aot module than amodule */
 		mono_aot_lock ();
 		g_assert (ji_to_amodule);
 		amodule = g_hash_table_lookup (ji_to_amodule, ji);
 		g_assert (amodule);
-		g_assert (code >= amodule->code && code <= amodule->code_end);
+		g_assert (amodule_contains_code_addr (amodule, code));
 		mono_aot_unlock ();
 	}
 
@@ -2942,6 +2984,9 @@ mono_aot_find_jit_info (MonoDomain *domain, MonoImage *image, gpointer addr)
 		/* FIXME: */
 		return NULL;
 
+	if (!amodule_contains_code_addr (amodule, addr))
+		return NULL;
+
 	async = mono_thread_info_is_async_context ();
 
 	offset = (guint8*)addr - amodule->code;
@@ -2975,9 +3020,6 @@ mono_aot_find_jit_info (MonoDomain *domain, MonoImage *image, gpointer addr)
 	code_offsets = amodule->sorted_code_offsets;
 	offsets_len = amodule->sorted_code_offsets_len;
 
-	if (offsets_len > 0 && (offset < code_offsets [0] || offset >= (amodule->code_end - amodule->code)))
-		return NULL;
-
 	/* Binary search in the sorted_code_offsets table */
 	left = 0;
 	right = offsets_len;
@@ -2985,10 +3027,14 @@ mono_aot_find_jit_info (MonoDomain *domain, MonoImage *image, gpointer addr)
 		pos = (left + right) / 2;
 
 		offset1 = code_offsets [(pos * 2)];
-		if (pos + 1 == offsets_len)
-			offset2 = amodule->code_end - amodule->code;
-		else
+		if (pos + 1 == offsets_len) {
+			if (amodule->code + offset1 >= amodule->jit_code_start && amodule->code + offset1 < amodule->jit_code_end)
+				offset2 = amodule->jit_code_end - amodule->code;
+			else
+				offset2 = amodule->llvm_code_end - amodule->code;
+		} else {
 			offset2 = code_offsets [(pos + 1) * 2];
+		}
 
 		if (offset < offset1)
 			right = pos;
@@ -3020,10 +3066,14 @@ mono_aot_find_jit_info (MonoDomain *domain, MonoImage *image, gpointer addr)
 	code = &amodule->code [amodule->code_offsets [method_index]];
 	ex_info = &amodule->blob [mono_aot_get_offset (amodule->ex_info_offsets, method_index)];
 
-	if (pos == offsets_len - 1)
-		code_len = amodule->code_end - code;
-	else
+	if (pos == offsets_len - 1) {
+		if (code >= amodule->jit_code_start && code < amodule->jit_code_end)
+			code_len = amodule->jit_code_end - code;
+		else
+			code_len = amodule->llvm_code_end - code;
+	} else {
 		code_len = code_offsets [(pos + 1) * 2] - code_offsets [pos * 2];
+	}
 
 	g_assert ((guint8*)code <= (guint8*)addr && (guint8*)addr < (guint8*)code + code_len);
 
@@ -3360,7 +3410,7 @@ decode_patch (MonoAotModule *aot_module, MonoMemPool *mp, MonoJumpInfo *ji, guin
 		int len = decode_value (p, &p);
 		char *s;
 
-	    s = mono_mempool_alloc0 (mp, len + 1);
+		s = mono_mempool_alloc0 (mp, len + 1);
 		memcpy (s, p, len + 1);
 		p += len + 1;
 
@@ -3680,7 +3730,7 @@ load_method (MonoDomain *domain, MonoAotModule *amodule, MonoImage *image, MonoM
 }
 
 static guint32
-find_extra_method_in_amodule (MonoAotModule *amodule, MonoMethod *method)
+find_aot_method_in_amodule (MonoAotModule *amodule, MonoMethod *method)
 {
 	guint32 table_size, entry_size, hash;
 	guint32 *table, *entry;
@@ -3764,14 +3814,14 @@ add_module_cb (gpointer key, gpointer value, gpointer user_data)
 }
 
 /*
- * find_extra_method:
+ * find_aot_method:
  *
  *   Try finding METHOD in the extra_method table in all AOT images.
  * Return its method index, or 0xffffff if not found. Set OUT_AMODULE to the AOT
  * module where the method was found.
  */
 static guint32
-find_extra_method (MonoMethod *method, MonoAotModule **out_amodule)
+find_aot_method (MonoMethod *method, MonoAotModule **out_amodule)
 {
 	guint32 index;
 	GPtrArray *modules;
@@ -3779,7 +3829,7 @@ find_extra_method (MonoMethod *method, MonoAotModule **out_amodule)
 
 	/* Try the method's module first */
 	*out_amodule = method->klass->image->aot_module;
-	index = find_extra_method_in_amodule (method->klass->image->aot_module, method);
+	index = find_aot_method_in_amodule (method->klass->image->aot_module, method);
 	if (index != 0xffffff)
 		return index;
 
@@ -3801,7 +3851,7 @@ find_extra_method (MonoMethod *method, MonoAotModule **out_amodule)
 		MonoAotModule *amodule = g_ptr_array_index (modules, i);
 
 		if (amodule != method->klass->image->aot_module)
-			index = find_extra_method_in_amodule (amodule, method);
+			index = find_aot_method_in_amodule (amodule, method);
 		if (index != 0xffffff) {
 			*out_amodule = amodule;
 			break;
@@ -3876,7 +3926,7 @@ mono_aot_get_method (MonoDomain *domain, MonoMethod *method)
 		if (code)
 			return code;
 
-		method_index = find_extra_method (method, &amodule);
+		method_index = find_aot_method (method, &amodule);
 		/*
 		 * Special case the ICollection<T> wrappers for arrays, as they cannot
 		 * be statically enumerated, and each wrapper ends up calling the same
@@ -3967,7 +4017,7 @@ mono_aot_get_method (MonoDomain *domain, MonoMethod *method)
 			MonoMethod *shared;
 
 			shared = mini_get_shared_method (method);
-			method_index = find_extra_method (shared, &amodule);
+			method_index = find_aot_method (shared, &amodule);
 			if (method_index != 0xffffff)
 				method = shared;
 		}
@@ -3975,7 +4025,7 @@ mono_aot_get_method (MonoDomain *domain, MonoMethod *method)
 		if (method_index == 0xffffff && method->is_inflated && mono_method_is_generic_sharable_full (method, FALSE, FALSE, TRUE)) {
 			/* gsharedvt */
 			/* Use the all-vt shared method since this is what was AOTed */
-			method_index = find_extra_method (mini_get_shared_method_full (method, TRUE, TRUE), &amodule);
+			method_index = find_aot_method (mini_get_shared_method_full (method, TRUE, TRUE), &amodule);
 			if (method_index != 0xffffff)
 				method = mini_get_shared_method_full (method, TRUE, FALSE);
 		}
@@ -4069,7 +4119,7 @@ find_aot_module_cb (gpointer key, gpointer value, gpointer user_data)
 	FindAotModuleUserData *data = (FindAotModuleUserData*)user_data;
 	MonoAotModule *aot_module = (MonoAotModule*)value;
 
-	if ((data->addr >= (guint8*)(aot_module->code_start)) && (data->addr < (guint8*)(aot_module->code_end)))
+	if (amodule_contains_code_addr (aot_module, data->addr))
 		data->module = aot_module;
 }
 
@@ -4246,8 +4296,9 @@ mono_aot_get_plt_entry (guint8 *code)
 		return NULL;
 
 #ifdef TARGET_ARM
-	if (amodule->thumb_end && code < amodule->thumb_end) {
-		return mono_arm_get_thumb_plt_entry (code);
+	if (amodule->thumb_end) {
+		if (code >= amodule->llvm_code_start && code < amodule->llvm_code_end)
+			return mono_arm_get_thumb_plt_entry (code);
 	}
 #endif
 
@@ -4806,10 +4857,10 @@ mono_aot_get_unbox_trampoline (MonoMethod *method)
 	int low, high, entry_index = 0;
 
 	if (method->is_inflated && !mono_method_is_generic_sharable_full (method, FALSE, FALSE, FALSE)) {
-		method_index = find_extra_method (method, &amodule);
+		method_index = find_aot_method (method, &amodule);
 		if (method_index == 0xffffff && mono_method_is_generic_sharable_full (method, FALSE, FALSE, TRUE)) {
 			MonoMethod *shared = mini_get_shared_method_full (method, TRUE, TRUE);
-			method_index = find_extra_method (shared, &amodule);
+			method_index = find_aot_method (shared, &amodule);
 		}
 		g_assert (method_index != 0xffffff);
 	} else {

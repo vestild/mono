@@ -15,8 +15,8 @@
 
 #include "mini.h"
 
-#define ALLOW_PARTIAL_SHARING TRUE
-//#define ALLOW_PARTIAL_SHARING FALSE
+//#define ALLOW_PARTIAL_SHARING TRUE
+#define ALLOW_PARTIAL_SHARING FALSE
  
 #if 0
 #define DEBUG(...) __VA_ARGS__
@@ -27,17 +27,19 @@
 static void
 mono_class_unregister_image_generic_subclasses (MonoImage *image, gpointer user_data);
 
-static gboolean partial_supported;
+static gboolean partial_supported = TRUE;
 
 static inline gboolean
 partial_sharing_supported (void)
 {
 	if (!ALLOW_PARTIAL_SHARING)
 		return FALSE;
-	/* Enable this only when AOT compiling or running in full-aot mode */
-	if (partial_supported || mono_aot_only)
-		return TRUE;
-	return FALSE;
+	/* Disable this when AOT compiling or running in full-aot mode */
+	if (mono_aot_only)
+		return FALSE;
+	if (!partial_supported)
+		return FALSE;
+	return TRUE;
 }
 
 static int
@@ -527,6 +529,7 @@ inflate_info (MonoRuntimeGenericContextInfoTemplate *oti, MonoGenericContext *co
 	{
 	case MONO_RGCTX_INFO_STATIC_DATA:
 	case MONO_RGCTX_INFO_KLASS:
+	case MONO_RGCTX_INFO_ELEMENT_KLASS:
 	case MONO_RGCTX_INFO_VTABLE:
 	case MONO_RGCTX_INFO_TYPE:
 	case MONO_RGCTX_INFO_REFLECTION_TYPE:
@@ -676,6 +679,7 @@ free_inflated_info (MonoRgctxInfoType info_type, gpointer info)
 	switch (info_type) {
 	case MONO_RGCTX_INFO_STATIC_DATA:
 	case MONO_RGCTX_INFO_KLASS:
+	case MONO_RGCTX_INFO_ELEMENT_KLASS:
 	case MONO_RGCTX_INFO_VTABLE:
 	case MONO_RGCTX_INFO_TYPE:
 	case MONO_RGCTX_INFO_REFLECTION_TYPE:
@@ -703,31 +707,21 @@ generic_inst_is_sharable (MonoGenericInst *inst, gboolean allow_type_vars,
 						  gboolean allow_partial)
 {
 	int i;
-	gboolean has_ref = FALSE;
 
 	for (i = 0; i < inst->type_argc; ++i) {
 		MonoType *type = inst->type_argv [i];
 
-		if (MONO_TYPE_IS_REFERENCE (type) || (allow_type_vars && (type->type == MONO_TYPE_VAR || type->type == MONO_TYPE_MVAR))) {
-			has_ref = TRUE;
+		if (MONO_TYPE_IS_REFERENCE (type) || (allow_type_vars && (type->type == MONO_TYPE_VAR || type->type == MONO_TYPE_MVAR)))
 			continue;
-		}
  
-		/*
-		 * Allow non ref arguments, if there is at least one ref argument
-		 * (partial sharing).
-		 * FIXME: Allow more types
-		 */
-		if (allow_partial && !type->byref && (((type->type >= MONO_TYPE_BOOLEAN) && (type->type <= MONO_TYPE_R8)) || (type->type == MONO_TYPE_I) || (type->type == MONO_TYPE_U)))
+		/* Allow non ref arguments if they are primitive types or enums (partial sharing). */
+		if (allow_partial && !type->byref && (((type->type >= MONO_TYPE_BOOLEAN) && (type->type <= MONO_TYPE_R8)) || (type->type == MONO_TYPE_I) || (type->type == MONO_TYPE_U) || (type->type == MONO_TYPE_VALUETYPE && type->data.klass->enumtype)))
 			continue;
 
 		return FALSE;
 	}
 
-	if (allow_partial)
-		return has_ref;
-	else
-		return TRUE;
+	return TRUE;
 }
 
 /*
@@ -936,6 +930,8 @@ class_type_info (MonoDomain *domain, MonoClass *class, MonoRgctxInfoType info_ty
 	}
 	case MONO_RGCTX_INFO_KLASS:
 		return class;
+	case MONO_RGCTX_INFO_ELEMENT_KLASS:
+		return class->element_class;
 	case MONO_RGCTX_INFO_VTABLE: {
 		MonoVTable *vtable = mono_class_vtable (domain, class);
 		if (!vtable)
@@ -1056,7 +1052,7 @@ class_type_info (MonoDomain *domain, MonoClass *class, MonoRgctxInfoType info_ty
 			/* Need to add an out wrapper */
 
 			/* FIXME: We have no access to the gsharedvt signature/gsctx used by the caller, so have to construct it ourselves */
-			gmethod = mini_get_shared_method (method);
+			gmethod = mini_get_shared_method_full (method, FALSE, TRUE);
 			sig = mono_method_signature (method);
 			gsig = mono_method_signature (gmethod);
 			ctx = mono_method_get_context (gmethod);
@@ -1217,6 +1213,7 @@ instantiate_info (MonoDomain *domain, MonoRuntimeGenericContextInfoTemplate *oti
 	switch (oti->info_type) {
 	case MONO_RGCTX_INFO_STATIC_DATA:
 	case MONO_RGCTX_INFO_KLASS:
+	case MONO_RGCTX_INFO_ELEMENT_KLASS:
 	case MONO_RGCTX_INFO_VTABLE:
 	case MONO_RGCTX_INFO_CAST_CACHE:
 		temporary = TRUE;
@@ -1230,6 +1227,7 @@ instantiate_info (MonoDomain *domain, MonoRuntimeGenericContextInfoTemplate *oti
 	switch (oti->info_type) {
 	case MONO_RGCTX_INFO_STATIC_DATA:
 	case MONO_RGCTX_INFO_KLASS:
+	case MONO_RGCTX_INFO_ELEMENT_KLASS:
 	case MONO_RGCTX_INFO_VTABLE:
 	case MONO_RGCTX_INFO_CAST_CACHE:
 	case MONO_RGCTX_INFO_ARRAY_ELEMENT_SIZE:
@@ -1526,6 +1524,7 @@ mono_rgctx_info_type_to_str (MonoRgctxInfoType type)
 	switch (type) {
 	case MONO_RGCTX_INFO_STATIC_DATA: return "STATIC_DATA";
 	case MONO_RGCTX_INFO_KLASS: return "KLASS";
+	case MONO_RGCTX_INFO_ELEMENT_KLASS: return "ELEMENT_KLASS";
 	case MONO_RGCTX_INFO_VTABLE: return "VTABLE";
 	case MONO_RGCTX_INFO_TYPE: return "TYPE";
 	case MONO_RGCTX_INFO_REFLECTION_TYPE: return "REFLECTION_TYPE";
@@ -1618,6 +1617,7 @@ info_equal (gpointer data1, gpointer data2, MonoRgctxInfoType info_type)
 	switch (info_type) {
 	case MONO_RGCTX_INFO_STATIC_DATA:
 	case MONO_RGCTX_INFO_KLASS:
+	case MONO_RGCTX_INFO_ELEMENT_KLASS:
 	case MONO_RGCTX_INFO_VTABLE:
 	case MONO_RGCTX_INFO_TYPE:
 	case MONO_RGCTX_INFO_REFLECTION_TYPE:
@@ -1661,6 +1661,7 @@ mini_rgctx_info_type_to_patch_info_type (MonoRgctxInfoType info_type)
 	switch (info_type) {
 	case MONO_RGCTX_INFO_STATIC_DATA:
 	case MONO_RGCTX_INFO_KLASS:
+	case MONO_RGCTX_INFO_ELEMENT_KLASS:
 	case MONO_RGCTX_INFO_VTABLE:
 	case MONO_RGCTX_INFO_TYPE:
 	case MONO_RGCTX_INFO_REFLECTION_TYPE:
@@ -2161,7 +2162,7 @@ is_async_method (MonoMethod *method)
 	/* Do less expensive checks first */
 	sig = mono_method_signature (method);
 	if (attr_class && sig && ((sig->ret->type == MONO_TYPE_VOID) ||
-				(sig->ret->type == MONO_TYPE_CLASS && (sig->ret->data.generic_class->container_class->name, "Task")) ||
+				(sig->ret->type == MONO_TYPE_CLASS && !strcmp (sig->ret->data.generic_class->container_class->name, "Task")) ||
 				(sig->ret->type == MONO_TYPE_GENERICINST && !strcmp (sig->ret->data.generic_class->container_class->name, "Task`1")))) {
 		//printf ("X: %s\n", mono_method_full_name (method, TRUE));
 		cattr = mono_custom_attrs_from_method (method);
@@ -2193,6 +2194,13 @@ mono_method_is_generic_sharable_full (MonoMethod *method, gboolean allow_type_va
 		return FALSE;
 
 	if (!partial_sharing_supported ())
+		allow_partial = FALSE;
+
+	if (method->klass->image->dynamic)
+		/*
+		 * Enabling this causes corlib test failures because the JIT encounters generic instances whose
+		 * instance_size is 0.
+		 */
 		allow_partial = FALSE;
 
 	/*
@@ -2540,14 +2548,30 @@ mini_get_basic_type_from_generic (MonoGenericSharingContext *gsctx, MonoType *ty
 	*/
 	if (!type->byref && (type->type == MONO_TYPE_VAR || type->type == MONO_TYPE_MVAR) && mini_is_gsharedvt_type_gsctx (gsctx, type))
 		return type;
-	else
+	else if (!type->byref && (type->type == MONO_TYPE_VAR || type->type == MONO_TYPE_MVAR)) {
+		MonoTypeEnum constraint = type->data.generic_param->gshared_constraint;
+		/* The gparam serial encodes the type this gparam can represent */
+		if (constraint == 0) {
+			return &mono_defaults.object_class->byval_arg;
+		} else {
+			MonoType t;
+			MonoClass *klass;
+
+			g_assert (constraint != MONO_TYPE_VALUETYPE);
+			memset (&t, 0, sizeof (t));
+			t.type = constraint;
+			klass = mono_class_from_mono_type (&t);
+			return &klass->byval_arg;
+		}
+	} else {
 		return mini_native_type_replace_type (mono_type_get_basic_type_from_generic (type));
+	}
 }
 
 /*
  * mini_type_get_underlying_type:
  *
- *   Return the underlying type of TYPE, taking into account enums, byref and generic
+ *   Return the underlying type of TYPE, taking into account enums, byref, bool, char and generic
  * sharing.
  */
 MonoType*
@@ -2559,7 +2583,15 @@ mini_type_get_underlying_type (MonoGenericSharingContext *gsctx, MonoType *type)
 		return &mono_defaults.int_class->byval_arg;
 	if (!type->byref && (type->type == MONO_TYPE_VAR || type->type == MONO_TYPE_MVAR) && mini_is_gsharedvt_type_gsctx (gsctx, type))
 		return type;
-	return mini_get_basic_type_from_generic (gsctx, mono_type_get_underlying_type (type));
+	type = mini_get_basic_type_from_generic (gsctx, mono_type_get_underlying_type (type));
+	switch (type->type) {
+	case MONO_TYPE_BOOLEAN:
+		return &mono_defaults.byte_class->byval_arg;
+	case MONO_TYPE_CHAR:
+		return &mono_defaults.uint16_class->byval_arg;
+	default:
+		return type;
+	}
 }
 
 /*
@@ -2661,12 +2693,9 @@ mini_type_var_is_vt (MonoCompile *cfg, MonoType *type)
 gboolean
 mini_type_is_reference (MonoCompile *cfg, MonoType *type)
 {
-	if (mono_type_is_reference (type))
-		return TRUE;
-	if (!cfg->generic_sharing_context)
-		return FALSE;
-	/*FIXME the probably needs better handle under partial sharing*/
-	return ((type->type == MONO_TYPE_VAR || type->type == MONO_TYPE_MVAR) && !mini_type_var_is_vt (cfg, type));
+	if (cfg->generic_sharing_context)
+		type = mini_get_underlying_type (cfg, type);
+	return mono_type_is_reference (type);
 }
 
 /*
@@ -2711,6 +2740,211 @@ gboolean
 mini_is_gsharedvt_variable_klass (MonoCompile *cfg, MonoClass *klass)
 {
 	return mini_is_gsharedvt_variable_type (cfg, &klass->byval_arg);
+}
+
+static char*
+get_shared_gparam_name (MonoTypeEnum constraint, const char *name)
+{
+	if (constraint == MONO_TYPE_VALUETYPE)
+		return g_strdup_printf ("%s_GSHAREDVT", name);
+	else {
+		MonoType t;
+		char *tname, *tname2, *res;
+
+		memset (&t, 0, sizeof (t));
+		t.type = constraint;
+		tname = mono_type_full_name (&t);
+		tname2 = g_utf8_strup (tname, strlen (tname));
+		res = g_strdup_printf ("%s_%s", name, tname2);
+		g_free (tname);
+		g_free (tname2);
+		return res;
+	}
+}
+
+/*
+ * get_shared_gparam:
+ *
+ *   Create an anonymous gparam with a type variable with a constraint which encodes which types can match it.
+ */
+static MonoType*
+get_shared_gparam (MonoType *t, MonoTypeEnum constraint)
+{
+	MonoGenericParam *par = t->data.generic_param;
+	MonoGenericParam *copy;
+	MonoType *res;
+	MonoImage *image = NULL;
+	char *name;
+
+	g_assert (mono_generic_param_info (par));
+	/* image might not be set for sre */
+	if (par->owner && par->owner->image) {
+		image = par->owner->image;
+
+		mono_image_lock (image);
+		if (!image->gshared_types) {
+			image->gshared_types_len = MONO_TYPE_INTERNAL;
+			image->gshared_types = g_new0 (GHashTable*, image->gshared_types_len);
+		}
+		if (!image->gshared_types [constraint])
+			image->gshared_types [constraint] = g_hash_table_new (NULL, NULL);
+		res = g_hash_table_lookup (image->gshared_types [constraint], par);
+		mono_image_unlock (image);
+		if (res)
+			return res;
+		copy = mono_image_alloc0 (image, sizeof (MonoGenericParamFull));
+		memcpy (copy, par, sizeof (MonoGenericParamFull));
+		name = get_shared_gparam_name (constraint, ((MonoGenericParamFull*)copy)->info.name);
+		((MonoGenericParamFull*)copy)->info.name = mono_image_strdup (image, name);
+		g_free (name);
+	} else {
+		/* mono_generic_param_name () expects this to be a MonoGenericParamFull */
+		copy = (MonoGenericParam*)g_new0 (MonoGenericParamFull, 1);
+		memcpy (copy, par, sizeof (MonoGenericParam));
+	}
+	copy->owner = NULL;
+	// FIXME:
+	copy->image = mono_defaults.corlib;
+	copy->gshared_constraint = constraint;
+	res = mono_metadata_type_dup (NULL, t);
+	res->data.generic_param = copy;
+
+	if (image) {
+		mono_image_lock (image);
+		/* Duplicates are ok */
+		g_hash_table_insert (image->gshared_types [constraint], par, res);
+		mono_image_unlock (image);
+	}
+
+	return res;
+}
+
+static MonoType*
+get_shared_type (MonoType *t, MonoType *type)
+{
+	MonoTypeEnum ttype;
+
+	g_assert (!type->byref && (((type->type >= MONO_TYPE_BOOLEAN) && (type->type <= MONO_TYPE_R8)) || (type->type == MONO_TYPE_I) || (type->type == MONO_TYPE_U) || (type->type == MONO_TYPE_VALUETYPE && type->data.klass->enumtype)));
+
+	/* Create a type variable with a constraint which encodes which types can match it */
+	ttype = type->type;
+	if (type->type == MONO_TYPE_VALUETYPE)
+		ttype = mono_class_enum_basetype (type->data.klass)->type;
+	return get_shared_gparam (t, ttype);
+}
+
+static MonoType*
+get_gsharedvt_type (MonoType *t)
+{
+	return get_shared_gparam (t, MONO_TYPE_VALUETYPE);
+}
+
+static MonoGenericInst*
+get_shared_inst (MonoGenericInst *inst, MonoGenericInst *shared_inst, MonoGenericContainer *container, gboolean all_vt, gboolean gsharedvt, gboolean partial)
+{
+	MonoGenericInst *res;
+	MonoType **type_argv;
+	int i;
+
+	type_argv = g_new0 (MonoType*, inst->type_argc);
+	for (i = 0; i < inst->type_argc; ++i) {
+		if (!all_vt && (MONO_TYPE_IS_REFERENCE (inst->type_argv [i]) || inst->type_argv [i]->type == MONO_TYPE_VAR || inst->type_argv [i]->type == MONO_TYPE_MVAR)) {
+			type_argv [i] = shared_inst->type_argv [i];
+		} else if (!all_vt && partial) {
+			/* These types match the ones in generic_inst_is_sharable () */
+			type_argv [i] = get_shared_type (shared_inst->type_argv [i], inst->type_argv [i]);
+		} else if (all_vt) {
+			type_argv [i] = get_gsharedvt_type (shared_inst->type_argv [i]);
+		} else if (gsharedvt) {
+			type_argv [i] = get_gsharedvt_type (shared_inst->type_argv [i]);
+		} else {
+			type_argv [i] = inst->type_argv [i];
+		}
+	}
+
+	res = mono_metadata_get_generic_inst (inst->type_argc, type_argv);
+	g_free (type_argv);
+	return res;
+}
+
+/*
+ * mini_get_shared_method_full:
+ *
+ *   Return the method which is actually compiled/registered when doing generic sharing.
+ * If ALL_VT is true, return the shared method belonging to an all-vtype instantiation.
+ * If IS_GSHAREDVT is true, treat METHOD as a gsharedvt method even if it fails some constraints.
+ * METHOD can be a non-inflated generic method.
+ */
+MonoMethod*
+mini_get_shared_method_full (MonoMethod *method, gboolean all_vt, gboolean is_gsharedvt)
+{
+	MonoError error;
+	MonoGenericContext shared_context;
+	MonoMethod *declaring_method, *res;
+	gboolean partial = FALSE;
+	gboolean gsharedvt = FALSE;
+	MonoGenericContainer *class_container, *method_container = NULL;
+
+	if (method->is_generic || (method->klass->generic_container && !method->is_inflated)) {
+		declaring_method = method;
+	} else {
+		declaring_method = mono_method_get_declaring_generic_method (method);
+	}
+
+	if (declaring_method->is_generic)
+		shared_context = mono_method_get_generic_container (declaring_method)->context;
+	else
+		shared_context = declaring_method->klass->generic_container->context;
+
+	/* Handle gsharedvt/partial sharing */
+	if ((method != declaring_method && method->is_inflated && !mono_method_is_generic_sharable_full (method, FALSE, FALSE, TRUE)) ||
+		is_gsharedvt || mini_is_gsharedvt_sharable_method (method)) {
+		MonoGenericContext *context = mono_method_get_context (method);
+		MonoGenericInst *inst;
+
+		if (!is_gsharedvt)
+			partial = mono_method_is_generic_sharable_full (method, FALSE, TRUE, FALSE);
+
+		gsharedvt = is_gsharedvt || (!partial && mini_is_gsharedvt_sharable_method (method));
+
+		class_container = declaring_method->klass->generic_container;
+		method_container = mono_method_get_generic_container (declaring_method);
+
+		/*
+		 * Create the shared context by replacing the ref type arguments with
+		 * type parameters, and keeping the rest.
+		 */
+		if (context)
+			inst = context->class_inst;
+		else
+			inst = shared_context.class_inst;
+		if (inst)
+			shared_context.class_inst = get_shared_inst (inst, shared_context.class_inst, class_container, all_vt, gsharedvt, partial);
+
+		if (context)
+			inst = context->method_inst;
+		else
+			inst = shared_context.method_inst;
+		if (inst)
+			shared_context.method_inst = get_shared_inst (inst, shared_context.method_inst, method_container, all_vt, gsharedvt, partial);
+
+		partial = TRUE;
+	}
+
+    res = mono_class_inflate_generic_method_checked (declaring_method, &shared_context, &error);
+	g_assert (mono_error_ok (&error)); /* FIXME don't swallow the error */
+
+	if (!partial) {
+		/* The result should be an inflated method whose parent is not inflated */
+		g_assert (!res->klass->is_inflated);
+	}
+	return res;
+}
+
+MonoMethod*
+mini_get_shared_method (MonoMethod *method)
+{
+	return mini_get_shared_method_full (method, FALSE, FALSE);
 }
 
 #if defined(ENABLE_GSHAREDVT)

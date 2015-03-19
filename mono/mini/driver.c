@@ -1860,8 +1860,11 @@ mono_main (int argc, char* argv[])
 		   fprintf (stderr, "This mono runtime is compiled for cross-compiling. Only the --aot option is supported.\n");
 		   exit (1);
        }
-#if SIZEOF_VOID_P == 8 && defined(TARGET_ARM)
-       fprintf (stderr, "Can't cross-compile on 64 bit platforms to arm.\n");
+#if SIZEOF_VOID_P == 8 && (defined(TARGET_ARM) || defined(TARGET_X86))
+       fprintf (stderr, "Can't cross-compile on 64-bit platforms to 32-bit architecture.\n");
+       exit (1);
+#elif SIZEOF_VOID_P == 4 && (defined(TARGET_ARM64) || defined(TARGET_AMD64))
+       fprintf (stderr, "Can't cross-compile on 32-bit platforms to 64-bit architecture.\n");
        exit (1);
 #endif
 #endif
@@ -1871,6 +1874,9 @@ mono_main (int argc, char* argv[])
 	}
 
 	mono_counters_init ();
+
+	/* Set rootdir before loading config */
+	mono_set_rootdir ();
 
 	if (enable_profile)
 		mono_profiler_load (profile_options);
@@ -1905,9 +1911,6 @@ mono_main (int argc, char* argv[])
 	if (mixed_mode)
 		mono_load_coree (argv [i]);
 #endif
-
-	/* Set rootdir before loading config */
-	mono_set_rootdir ();
 
 	/* Parse gac loading options before loading assemblies. */
 	if (mono_compile_aot || action == DO_EXEC || action == DO_DEBUGGER) {

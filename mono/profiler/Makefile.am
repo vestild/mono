@@ -9,6 +9,7 @@ AM_CPPFLAGS = \
 	-I$(top_srcdir) 	\
 	$(GLIB_CFLAGS)
 
+if !HOST_WIN32
 if !DISABLE_LIBRARIES
 if !DISABLE_PROFILER
 bin_PROGRAMS = mprof-report
@@ -21,9 +22,11 @@ lib_LTLIBRARIES = libmono-profiler-cov.la libmono-profiler-aot.la libmono-profil
 
 if PLATFORM_DARWIN
 libmono_profiler_log_la_LDFLAGS = -Wl,-undefined -Wl,suppress -Wl,-flat_namespace
+libmono_profiler_cov_la_LDFLAGS = -Wl,-undefined -Wl,suppress -Wl,-flat_namespace
 endif
 if PLATFORM_ANDROID
 libmono_profiler_log_la_LDFLAGS = -avoid-version
+endif
 endif
 endif
 endif
@@ -62,15 +65,11 @@ libmono_profiler_aot_la_LIBADD = $(LIBMONO) $(GLIB_LIBS) $(LIBICONV)
 libmono_profiler_iomap_la_SOURCES = mono-profiler-iomap.c
 libmono_profiler_iomap_la_LIBADD = $(LIBMONO) $(GLIB_LIBS) $(LIBICONV)
 libmono_profiler_log_la_SOURCES = proflog.c
-libmono_profiler_log_la_LIBADD = $(LIBMONO) $(Z_LIBS)
+libmono_profiler_log_la_LIBADD = $(LIBMONO) $(GLIB_LIBS) $(Z_LIBS)
 if HAVE_VTUNE
 libmono_profiler_vtune_la_SOURCES = mono-profiler-vtune.c
 libmono_profiler_vtune_la_CFLAGS = $(VTUNE_CFLAGS)
 libmono_profiler_vtune_la_LIBADD = $(VTUNE_LIBS) $(LIBMONO) $(GLIB_LIBS) $(LIBICONV)
-endif
-
-if PLATFORM_ANDROID
-libmono_profiler_log_la_LIBADD += $(GLIB_LIBS)
 endif
 
 mprof_report_SOURCES = decode.c

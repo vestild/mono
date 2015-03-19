@@ -30,6 +30,9 @@
 
 #include <mono/utils/freebsd-dwarf.h>
 
+#define DW_AT_MIPS_linkage_name 0x2007
+#define DW_LNE_set_prologue_end 0x0a
+
 typedef struct {
 	MonoMethod *method;
 	char *start_symbol, *end_symbol;
@@ -154,12 +157,6 @@ emit_pop_section (MonoDwarfWriter *w)
 }
 
 static inline void
-emit_local_symbol (MonoDwarfWriter *w, const char *name, const char *end_label, gboolean func) 
-{ 
-	img_writer_emit_local_symbol (w->w, name, end_label, func); 
-}
-
-static inline void
 emit_label (MonoDwarfWriter *w, const char *name) 
 { 
 	img_writer_emit_label (w->w, name); 
@@ -217,12 +214,6 @@ static inline void
 emit_symbol_diff (MonoDwarfWriter *w, const char *end, const char* start, int offset) 
 { 
 	img_writer_emit_symbol_diff (w->w, end, start, offset); 
-}
-
-static inline void
-emit_zero_bytes (MonoDwarfWriter *w, int num) 
-{ 
-	img_writer_emit_zero_bytes (w->w, num); 
 }
 
 static inline void
@@ -455,6 +446,9 @@ static int compile_unit_attr [] = {
 
 static int subprogram_attr [] = {
 	DW_AT_name         , DW_FORM_string,
+	DW_AT_MIPS_linkage_name, DW_FORM_string,
+	DW_AT_decl_file    , DW_FORM_udata,
+	DW_AT_decl_line    , DW_FORM_udata,
 #ifndef TARGET_IOS
 	DW_AT_description  , DW_FORM_string,
 #endif
@@ -1059,7 +1053,6 @@ emit_class_dwarf_info (MonoDwarfWriter *w, MonoClass *klass, gboolean vtype)
 		iter = NULL;
 		while ((field = mono_class_get_fields (klass, &iter))) {
 			const char *p;
-			int len;
 			MonoTypeEnum def_type;
 
 			if (strcmp ("value__", mono_field_get_name (field)) == 0)
@@ -1071,7 +1064,7 @@ emit_class_dwarf_info (MonoDwarfWriter *w, MonoClass *klass, gboolean vtype)
 			emit_string (w, mono_field_get_name (field));
 
 			p = mono_class_get_field_default_value (field, &def_type);
-			len = mono_metadata_decode_blob_size (p, &p);
+			/* len = */ mono_metadata_decode_blob_size (p, &p);
 			switch (mono_class_enum_basetype (klass)->type) {
 			case MONO_TYPE_U1:
 			case MONO_TYPE_I1:
@@ -1666,14 +1659,6 @@ emit_line_number_info (MonoDwarfWriter *w, MonoMethod *method,
 				emit_pointer_unaligned (w, start_symbol);
 			else
 				emit_pointer_value (w, code);
-
-			/* 
-			 * The prolog+initlocals region does not have a line number, this
-			 * makes them belong to the first line of the method.
-			 */
-			emit_byte (w, DW_LNS_advance_line);
-			//printf ("FIRST: %d %d %d\n", prev_line, loc->row, il_offset);
-			emit_sleb128 (w, (gint32)loc->row - (gint32)prev_line);
 			first = FALSE;
 		}
 
@@ -1697,7 +1682,10 @@ emit_line_number_info (MonoDwarfWriter *w, MonoMethod *method,
 			}
 		}
 
-		if (loc->row != prev_line && !first) {
+		if (loc->row != prev_line) {
+			if (prev_native_offset == 0)
+				emit_byte (w, DW_LNE_set_prologue_end);
+
 			//printf ("X: %p(+0x%x) %d %s:%d(+%d)\n", code + i, addr_diff, loc->il_offset, loc->source_file, loc->row, line_diff);
 			emit_advance_op (w, line_diff, addr_diff);
 
@@ -1824,13 +1812,16 @@ find_vmv (MonoCompile *cfg, MonoInst *ins)
 }
 
 void
-mono_dwarf_writer_emit_method (MonoDwarfWriter *w, MonoCompile *cfg, MonoMethod *method, char *start_symbol, char *end_symbol, guint8 *code, guint32 code_size, MonoInst **args, MonoInst **locals, GSList *unwind_info, MonoDebugMethodJitInfo *debug_info)
+mono_dwarf_writer_emit_method (MonoDwarfWriter *w, MonoCompile *cfg, MonoMethod *method, char *start_symbol, char *end_symbol, char *linkage_name,
+							   guint8 *code, guint32 code_size, MonoInst **args, MonoInst **locals, GSList *unwind_info, MonoDebugMethodJitInfo *debug_info)
 {
 	char *name;
 	MonoMethodSignature *sig;
 	MonoMethodHeader *header;
 	char **names;
 	MonoDebugLocalsInfo *locals_info;
+	MonoDebugMethodInfo *minfo;
+	MonoDebugSourceLocation *loc = NULL;
 	int i;
 	guint8 buf [128];
 	guint8 *p;
@@ -1862,13 +1853,32 @@ mono_dwarf_writer_emit_method (MonoDwarfWriter *w, MonoCompile *cfg, MonoMethod 
 		emit_type (w, header->locals [i]);
 	}
 
+	minfo = mono_debug_lookup_method (method);
+	if (minfo)
+		loc = mono_debug_symfile_lookup_location (minfo, 0);
+
 	/* Subprogram */
 	names = g_new0 (char *, sig->param_count);
 	mono_method_get_param_names (method, (const char **) names);
 
 	emit_uleb128 (w, ABBREV_SUBPROGRAM);
+	/* DW_AT_name */
 	name = mono_method_full_name (method, FALSE);
 	emit_string (w, name);
+	/* DW_AT_MIPS_linkage_name */
+	if (linkage_name)
+		emit_string (w, linkage_name);
+	else
+		emit_string (w, "");
+	/* DW_AT_decl_file/DW_AT_decl_line */
+	if (loc) {
+		int file_index = add_line_number_file_name (w, loc->source_file, 0, 0);
+		emit_uleb128 (w, file_index + 1);
+		emit_uleb128 (w, loc->row);
+	} else {
+		emit_uleb128 (w, 0);
+		emit_uleb128 (w, 0);
+	}
 #ifndef TARGET_IOS
 	emit_string (w, name);
 #endif

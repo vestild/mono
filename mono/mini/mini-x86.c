@@ -324,7 +324,7 @@ add_valuetype (MonoGenericSharingContext *gsctx, MonoMethodSignature *sig, ArgIn
 
 		/* Special case structs with only a float member */
 		if (info->num_fields == 1) {
-			int ftype = mini_replace_type (info->fields [0].field->type)->type;
+			int ftype = mini_type_get_underlying_type (gsctx, info->fields [0].field->type)->type;
 			if ((info->native_size == 8) && (ftype == MONO_TYPE_R8)) {
 				ainfo->storage = ArgValuetypeInReg;
 				ainfo->pair_storage [0] = ArgOnDoubleFpStack;
@@ -392,12 +392,10 @@ get_call_info_internal (MonoGenericSharingContext *gsctx, CallInfo *cinfo, MonoM
 	{
 		ret_type = mini_type_get_underlying_type (gsctx, sig->ret);
 		switch (ret_type->type) {
-		case MONO_TYPE_BOOLEAN:
 		case MONO_TYPE_I1:
 		case MONO_TYPE_U1:
 		case MONO_TYPE_I2:
 		case MONO_TYPE_U2:
-		case MONO_TYPE_CHAR:
 		case MONO_TYPE_I4:
 		case MONO_TYPE_U4:
 		case MONO_TYPE_I:
@@ -517,14 +515,12 @@ get_call_info_internal (MonoGenericSharingContext *gsctx, CallInfo *cinfo, MonoM
 		}
 		ptype = mini_type_get_underlying_type (gsctx, sig->params [i]);
 		switch (ptype->type) {
-		case MONO_TYPE_BOOLEAN:
 		case MONO_TYPE_I1:
 		case MONO_TYPE_U1:
 			add_general (&gr, param_regs, &stack_size, ainfo);
 			break;
 		case MONO_TYPE_I2:
 		case MONO_TYPE_U2:
-		case MONO_TYPE_CHAR:
 			add_general (&gr, param_regs, &stack_size, ainfo);
 			break;
 		case MONO_TYPE_I4:
@@ -590,15 +586,18 @@ get_call_info_internal (MonoGenericSharingContext *gsctx, CallInfo *cinfo, MonoM
 		add_general (&gr, param_regs, &stack_size, &cinfo->sig_cookie);
 	}
 
+	if (cinfo->vtype_retaddr) {
+		/* if the function returns a struct on stack, the called method already does a ret $0x4 */
+		cinfo->callee_stack_pop = 4;
+	} else if (CALLCONV_IS_STDCALL (sig) && sig->pinvoke) {
+		/* Have to compensate for the stack space popped by the native callee */
+		cinfo->callee_stack_pop = stack_size;
+	}
+
 	if (mono_do_x86_stack_align && (stack_size % MONO_ARCH_FRAME_ALIGNMENT) != 0) {
 		cinfo->need_stack_align = TRUE;
 		cinfo->stack_align_amount = MONO_ARCH_FRAME_ALIGNMENT - (stack_size % MONO_ARCH_FRAME_ALIGNMENT);
 		stack_size += cinfo->stack_align_amount;
-	}
-
-	if (cinfo->vtype_retaddr) {
-		/* if the function returns a struct on stack, the called method already does a ret $0x4 */
-		cinfo->callee_stack_pop = 4;
 	}
 
 	cinfo->stack_usage = stack_size;
@@ -721,7 +720,7 @@ mono_arch_tail_call_supported (MonoCompile *cfg, MonoMethodSignature *caller_sig
 	 * the extra stack space would be left on the stack after the tail call.
 	 */
 	res = c1->stack_usage >= c2->stack_usage;
-	callee_ret = mini_replace_type (callee_sig->ret);
+	callee_ret = mini_get_underlying_type (cfg, callee_sig->ret);
 	if (callee_ret && MONO_TYPE_ISSTRUCT (callee_ret) && c2->ret.storage != ArgValuetypeInReg)
 		/* An address on the callee's stack is passed as the first argument */
 		res = FALSE;
@@ -1209,7 +1208,7 @@ mono_arch_create_vars (MonoCompile *cfg)
 	sig = mono_method_signature (cfg->method);
 
 	cinfo = get_call_info (cfg->generic_sharing_context, cfg->mempool, sig);
-	sig_ret = mini_replace_type (sig->ret);
+	sig_ret = mini_get_underlying_type (cfg, sig->ret);
 
 	if (cinfo->ret.storage == ArgValuetypeInReg)
 		cfg->ret_var_is_local = TRUE;
@@ -1424,7 +1423,7 @@ mono_arch_emit_call (MonoCompile *cfg, MonoCallInst *call)
 
 	sig = call->signature;
 	n = sig->param_count + sig->hasthis;
-	sig_ret = mini_replace_type (sig->ret);
+	sig_ret = mini_get_underlying_type (cfg, sig->ret);
 
 	cinfo = get_call_info (cfg->generic_sharing_context, cfg->mempool, sig);
 	call->call_info = cinfo;
@@ -2289,7 +2288,7 @@ static int tls_gs_offset;
 gboolean
 mono_x86_have_tls_get (void)
 {
-#ifdef __APPLE__
+#ifdef TARGET_MACH
 	static gboolean have_tls_get = FALSE;
 	static gboolean inited = FALSE;
 	guint32 *ins;
@@ -2543,7 +2542,7 @@ mono_arch_output_basic_block (MonoCompile *cfg, MonoBasicBlock *bb)
 
 	cpos = bb->max_offset;
 
-	if (cfg->prof_options & MONO_PROFILE_COVERAGE) {
+	if ((cfg->prof_options & MONO_PROFILE_COVERAGE) && cfg->coverage_info) {
 		MonoProfileCoverageInfo *cov = cfg->coverage_info;
 		g_assert (!cfg->compile_aot);
 		cpos += 6;
@@ -6039,8 +6038,6 @@ mono_arch_get_patch_offset (guint8 *code)
 gboolean
 mono_breakpoint_clean_code (guint8 *method_start, guint8 *code, int offset, guint8 *buf, int size)
 {
-	int i;
-	gboolean can_write = TRUE;
 	/*
 	 * If method_start is non-NULL we need to perform bound checks, since we access memory
 	 * at code - offset we could go before the start of the method and end up in a different
@@ -6054,21 +6051,7 @@ mono_breakpoint_clean_code (guint8 *method_start, guint8 *code, int offset, guin
 		memset (buf, 0, size);
 		memcpy (buf + offset - diff, method_start, diff + size - offset);
 	}
-	code -= offset;
-	for (i = 0; i < MONO_BREAKPOINT_ARRAY_SIZE; ++i) {
-		int idx = mono_breakpoint_info_index [i];
-		guint8 *ptr;
-		if (idx < 1)
-			continue;
-		ptr = mono_breakpoint_info [idx].address;
-		if (ptr >= code && ptr < code + size) {
-			guint8 saved_byte = mono_breakpoint_info [idx].saved_byte;
-			can_write = FALSE;
-			/*g_print ("patching %p with 0x%02x (was: 0x%02x)\n", ptr, saved_byte, buf [ptr - code]);*/
-			buf [ptr - code] = saved_byte;
-		}
-	}
-	return can_write;
+	return TRUE;
 }
 
 /*

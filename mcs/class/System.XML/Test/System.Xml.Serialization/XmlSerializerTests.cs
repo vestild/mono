@@ -736,7 +736,7 @@ namespace MonoTests.System.XmlSerialization
 			SerializeEncoded (f, typeof (Field_Encoded));
 			Assert.AreEqual (string.Format (CultureInfo.InvariantCulture,
 				"<?xml version='1.0' encoding='utf-16'?>" +
-				"<q1:field xmlns:xsi='{1}' xmlns:xsd='{0}' id='id1' flag1=''" +
+				"<q1:field xmlns:xsd='{0}' xmlns:xsi='{1}' id='id1' flag1=''" +
 				" flag2='' flag3='' flag4='' modifiers='PuBlIc'" +
 				" modifiers2='PuBlIc' modifiers4='PuBlIc' xmlns:q1='some:urn' />",
 				XmlSchema.Namespace, XmlSchema.InstanceNamespace),
@@ -753,7 +753,7 @@ namespace MonoTests.System.XmlSerialization
 			SerializeEncoded (f, typeof (Field_Encoded));
 			Assert.AreEqual (string.Format (CultureInfo.InvariantCulture,
 				"<?xml version='1.0' encoding='utf-16'?>" +
-				"<q1:field xmlns:xsi='{1}' xmlns:xsd='{0}' id='id1' flag3='two'" +
+				"<q1:field xmlns:xsd='{0}' xmlns:xsi='{1}' id='id1' flag3='two'" +
 				" flag4='' modifiers='Protected' modifiers2='PuBlIc'" +
 				" xmlns:q1='some:urn' />",
 				XmlSchema.Namespace, XmlSchema.InstanceNamespace),
@@ -770,7 +770,7 @@ namespace MonoTests.System.XmlSerialization
 			SerializeEncoded (f, typeof (Field_Encoded));
 			Assert.AreEqual (string.Format (CultureInfo.InvariantCulture,
 				"<?xml version='1.0' encoding='utf-16'?>" +
-				"<q1:field xmlns:xsi='{1}' xmlns:xsd='{0}' id='id1' flag1='two'" +
+				"<q1:field xmlns:xsd='{0}' xmlns:xsi='{1}' id='id1' flag1='two'" +
 				" flag2='two' flag4='' modifiers='PuBlIc' modifiers2='Protected'" +
 				" modifiers3='Protected' modifiers4='PuBlIc' modifiers5='Protected'" +
 				" xmlns:q1='some:urn' />",
@@ -976,7 +976,7 @@ namespace MonoTests.System.XmlSerialization
 			Serialize (optionalValue);
 			Assert.AreEqual (string.Format (CultureInfo.InvariantCulture,
 				"<?xml version='1.0' encoding='utf-16'?>" +
-				"<optionalValue xmlns:xsi='{1}' xmlns:xsd='{0}' xmlns='{2}' />",
+				"<optionalValue xmlns:xsd='{0}' xmlns:xsi='{1}' xmlns='{2}' />",
 				XmlSchema.Namespace, XmlSchema.InstanceNamespace, AnotherNamespace),
 				sw.ToString (), "#1");
 
@@ -990,7 +990,7 @@ namespace MonoTests.System.XmlSerialization
 			Serialize (optionalValue, overrides);
 			Assert.AreEqual (string.Format (CultureInfo.InvariantCulture,
 				"<?xml version='1.0' encoding='utf-16'?>" +
-				"<optionalValue xmlns:xsi='{1}' xmlns:xsd='{0}' xmlns='{2}'>" +
+				"<optionalValue xmlns:xsd='{0}' xmlns:xsi='{1}' xmlns='{2}'>" +
 				"<Attributes xmlns='{3}'>one four</Attributes>" +
 				"</optionalValue>", XmlSchema.Namespace, XmlSchema.InstanceNamespace,
 				AnotherNamespace, ANamespace), sw.ToString (), "#2");
@@ -999,7 +999,7 @@ namespace MonoTests.System.XmlSerialization
 			Serialize (optionalValue, overrides);
 			Assert.AreEqual (string.Format (CultureInfo.InvariantCulture,
 				"<?xml version='1.0' encoding='utf-16'?>" +
-				"<optionalValue xmlns:xsi='{1}' xmlns:xsd='{0}' xmlns='{2}'>" +
+				"<optionalValue xmlns:xsd='{0}' xmlns:xsi='{1}' xmlns='{2}'>" +
 				"<Attributes xmlns='{3}'>one four</Attributes>" +
 				"<Flags xmlns='{3}'>one</Flags>" +
 				"</optionalValue>",
@@ -2862,7 +2862,27 @@ namespace MonoTests.System.XmlSerialization
 
 
 		#endregion //GenericsSeralizationTests
+		#region XmlInclude on abstract class tests (Bug #18558)
+		[Test]
+		public void TestSerializeIntermediateType ()
+		{
+			string expectedXml = "<ContainerTypeForTest xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\"><XmlIntermediateType intermediate=\"false\"/></ContainerTypeForTest>";
+			var obj = new ContainerTypeForTest();
+			obj.MemberToUseInclude = new IntermediateTypeForTest ();
+			Serialize (obj);
+			Assert.AreEqual (Infoset (expectedXml), WriterText, "Serialized Output : " + WriterText);
+		}
 
+		[Test]
+		public void TestSerializeSecondType ()
+		{
+			string expectedXml = "<ContainerTypeForTest xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\"><XmlSecondType intermediate=\"false\"/></ContainerTypeForTest>";
+			var obj = new ContainerTypeForTest();
+			obj.MemberToUseInclude = new SecondDerivedTypeForTest ();
+			Serialize (obj);
+			Assert.AreEqual (Infoset (expectedXml), WriterText, "Serialized Output : " + WriterText);
+		}
+		#endregion
 		public class XmlArrayOnInt
 		{
 			[XmlArray]
@@ -3469,4 +3489,40 @@ namespace MonoTests.System.XmlSerialization
 			generatorFallback.SetValue (null, generatorFallbackOld);
 		}
 	}
+
+#region XmlInclude on abstract class test classes
+
+	[XmlType]
+	public class ContainerTypeForTest
+	{
+		[XmlElement ("XmlFirstType", typeof (FirstDerivedTypeForTest))]
+		[XmlElement ("XmlIntermediateType", typeof (IntermediateTypeForTest))]
+		[XmlElement ("XmlSecondType", typeof (SecondDerivedTypeForTest))]
+		public AbstractTypeForTest MemberToUseInclude { get; set; }
+	}
+
+	[XmlInclude (typeof (FirstDerivedTypeForTest))]
+	[XmlInclude (typeof (IntermediateTypeForTest))]
+	[XmlInclude (typeof (SecondDerivedTypeForTest))]
+	public abstract class AbstractTypeForTest
+	{
+	}
+
+	public class IntermediateTypeForTest : AbstractTypeForTest
+	{
+		[XmlAttribute (AttributeName = "intermediate")]
+		public bool IntermediateMember { get; set; }
+	}
+
+	public class FirstDerivedTypeForTest : AbstractTypeForTest
+	{
+		public string FirstMember { get; set; }
+	}
+
+	public class SecondDerivedTypeForTest : IntermediateTypeForTest
+	{
+		public string SecondMember { get; set; }
+	}
+#endregion
+
 }
