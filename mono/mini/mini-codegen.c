@@ -2355,6 +2355,8 @@ mono_opcode_to_cond (int opcode)
 	case OP_LCEQ:
 	case OP_FBEQ:
 	case OP_FCEQ:
+	case OP_RBEQ:
+	case OP_RCEQ:
 	case OP_COND_EXC_EQ:
 	case OP_COND_EXC_IEQ:
 	case OP_CMOV_IEQ:
@@ -2393,6 +2395,8 @@ mono_opcode_to_cond (int opcode)
 	case OP_LCLT:
 	case OP_FBLT:
 	case OP_FCLT:
+	case OP_RBLT:
+	case OP_RCLT:
 	case OP_COND_EXC_LT:
 	case OP_COND_EXC_ILT:
 	case OP_CMOV_ILT:
@@ -2405,6 +2409,8 @@ mono_opcode_to_cond (int opcode)
 	case OP_LCGT:
 	case OP_FBGT:
 	case OP_FCGT:
+	case OP_RBGT:
+	case OP_RCGT:
 	case OP_COND_EXC_GT:
 	case OP_COND_EXC_IGT:
 	case OP_CMOV_IGT:
@@ -2435,6 +2441,8 @@ mono_opcode_to_cond (int opcode)
 	case OP_LCLT_UN:
 	case OP_FBLT_UN:
 	case OP_FCLT_UN:
+	case OP_RBLT_UN:
+	case OP_RCLT_UN:
 	case OP_COND_EXC_LT_UN:
 	case OP_COND_EXC_ILT_UN:
 	case OP_CMOV_ILT_UN:
@@ -2447,6 +2455,8 @@ mono_opcode_to_cond (int opcode)
 	case OP_LCGT_UN:
 	case OP_FCGT_UN:
 	case OP_FBGT_UN:
+	case OP_RCGT_UN:
+	case OP_RBGT_UN:
 	case OP_COND_EXC_GT_UN:
 	case OP_COND_EXC_IGT_UN:
 	case OP_CMOV_IGT_UN:
@@ -2574,7 +2584,8 @@ mono_is_regsize_var (MonoType *t)
 void
 mono_peephole_ins (MonoBasicBlock *bb, MonoInst *ins)
 {
-	MonoInst *last_ins = ins->prev;
+	int filter = FILTER_IL_SEQ_POINT;
+	MonoInst *last_ins = mono_inst_prev (ins, filter);
 
 	switch (ins->opcode) {
 	case OP_MUL_IMM: 
@@ -2598,7 +2609,7 @@ mono_peephole_ins (MonoBasicBlock *bb, MonoInst *ins)
 		 * OP_MOVE reg1, reg2
 		 */
 		if (last_ins && last_ins->opcode == OP_GC_LIVENESS_DEF)
-			last_ins = last_ins->prev;
+			last_ins = mono_inst_prev (ins, filter);
 		if (last_ins &&
 			(((ins->opcode == OP_LOADI4_MEMBASE) && (last_ins->opcode == OP_STOREI4_MEMBASE_REG)) ||
 			 ((ins->opcode == OP_LOAD_MEMBASE) && (last_ins->opcode == OP_STORE_MEMBASE_REG))) &&

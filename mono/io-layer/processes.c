@@ -19,18 +19,29 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef HAVE_SIGNAL_H
 #include <signal.h>
-#include <sys/wait.h>
+#endif
 #include <sys/time.h>
-#include <sys/resource.h>
 #include <fcntl.h>
 #ifdef HAVE_SYS_PARAM_H
 #include <sys/param.h>
 #endif
 #include <ctype.h>
 
+#ifdef HAVE_SYS_WAIT_H
+#include <sys/wait.h>
+#endif
+#ifdef HAVE_SYS_RESOURCE_H
+#include <sys/resource.h>
+#endif
+
 #ifdef HAVE_SYS_MKDEV_H
 #include <sys/mkdev.h>
+#endif
+
+#ifdef HAVE_UTIME_H
+#include <utime.h>
 #endif
 
 /* sys/resource.h (for rusage) is required when using osx 10.3 (but not 10.4) */
@@ -490,6 +501,19 @@ CreateProcessWithLogonW (const gunichar2 *username,
 }
 
 static gboolean
+is_readable (const char *prog)
+{
+	struct stat buf;
+	if (access (prog, R_OK) != 0)
+		return FALSE;
+	if (stat (prog, &buf))
+		return FALSE;
+	if (S_ISREG (buf.st_mode))
+		return TRUE;
+	return FALSE;
+}
+
+static gboolean
 is_executable (const char *prog)
 {
 	struct stat buf;
@@ -621,7 +645,7 @@ gboolean CreateProcess (const gunichar2 *appname, const gunichar2 *cmdline,
 			prog = g_strdup (unquoted);
 
 			/* Executable existing ? */
-			if (!is_executable (prog)) {
+			if (!is_readable (prog)) {
 				DEBUG ("%s: Couldn't find executable %s",
 					   __func__, prog);
 				g_free (unquoted);
@@ -637,8 +661,8 @@ gboolean CreateProcess (const gunichar2 *appname, const gunichar2 *cmdline,
 			prog = g_strdup_printf ("%s/%s", curdir, unquoted);
 			g_free (curdir);
 
-			/* And make sure it's executable */
-			if (!is_executable (prog)) {
+			/* And make sure it's readable */
+			if (!is_readable (prog)) {
 				DEBUG ("%s: Couldn't find executable %s",
 					   __func__, prog);
 				g_free (unquoted);
@@ -729,7 +753,7 @@ gboolean CreateProcess (const gunichar2 *appname, const gunichar2 *cmdline,
 			prog = g_strdup (token);
 			
 			/* Executable existing ? */
-			if (!is_executable (prog)) {
+			if (!is_readable (prog)) {
 				DEBUG ("%s: Couldn't find executable %s",
 					   __func__, token);
 				g_free (token);
@@ -750,8 +774,10 @@ gboolean CreateProcess (const gunichar2 *appname, const gunichar2 *cmdline,
 
 			/* I assume X_OK is the criterion to use,
 			 * rather than F_OK
+			 *
+			 * X_OK is too strict *if* the target is a CLR binary
 			 */
-			if (!is_executable (prog)) {
+			if (!is_readable (prog)) {
 				g_free (prog);
 				prog = g_find_program_in_path (token);
 				if (prog == NULL) {
@@ -807,6 +833,13 @@ gboolean CreateProcess (const gunichar2 *appname, const gunichar2 *cmdline,
 				
 				goto free_strings;
 			}
+		}
+	} else {
+		if (!is_executable (prog)) {
+			DEBUG ("%s: Executable permisson not set on %s", __func__, prog);
+			g_free (prog);
+			SetLastError (ERROR_ACCESS_DENIED);
+			goto free_strings;
 		}
 	}
 
@@ -1240,7 +1273,12 @@ GetExitCodeProcess (gpointer process, guint32 *code)
 		
 		return FALSE;
 	}
-	
+
+	if (process_handle->id == _wapi_getpid ()) {
+		*code = STILL_ACTIVE;
+		return TRUE;
+	}
+
 	/* A process handle is only signalled if the process has exited
 	 * and has been waited for */
 
@@ -1317,8 +1355,8 @@ typedef struct
 	gpointer address_end;
 	char *perms;
 	gpointer address_offset;
-	dev_t device;
-	ino_t inode;
+	guint64 device;
+	guint64 inode;
 	char *filename;
 } WapiProcModule;
 
@@ -1387,7 +1425,7 @@ static GSList *load_modules (void)
 		mod->perms = g_strdup ("r--p");
 		mod->address_offset = 0;
 		mod->device = makedev (0, 0);
-		mod->inode = (ino_t) i;
+		mod->inode = i;
 		mod->filename = g_strdup (name); 
 		
 		if (g_slist_find_custom (ret, mod, find_procmodule) == NULL) {
@@ -1439,7 +1477,7 @@ static GSList *load_modules (void)
                                        info->dlpi_phdr[info->dlpi_phnum - 1].p_vaddr);
 		mod->perms = g_strdup ("r--p");
 		mod->address_offset = 0;
-		mod->inode = (ino_t) i;
+		mod->inode = i;
 		mod->filename = g_strdup (info->dlpi_name); 
 
 		DEBUG ("%s: inode=%d, filename=%s, address_start=%p, address_end=%p", __func__,
@@ -1501,8 +1539,8 @@ static GSList *load_modules (FILE *fp)
 	char *maj_dev_start, *min_dev_start, *inode_start, prot_buf[5];
 	gpointer address_start, address_end, address_offset;
 	guint32 maj_dev, min_dev;
-	ino_t inode;
-	dev_t device;
+	guint64 inode;
+	guint64 device;
 	
 	while (fgets (buf, sizeof(buf), fp)) {
 		p = buf;
@@ -1575,7 +1613,7 @@ static GSList *load_modules (FILE *fp)
 		if (!g_ascii_isxdigit (*inode_start)) {
 			continue;
 		}
-		inode = (ino_t)strtol (inode_start, &endp, 10);
+		inode = (guint64)strtol (inode_start, &endp, 10);
 		p = endp;
 		if (!g_ascii_isspace (*p)) {
 			continue;

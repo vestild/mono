@@ -5,7 +5,10 @@ export __SECURITY_BOOTSTRAP_DB=$(topdir)/class/corlib
 
 LIBRARY = corlib.dll
 LIBRARY_NAME = mscorlib.dll
-LIB_MCS_FLAGS = $(RESOURCE_FILES:%=-resource:%)
+
+REFERENCE_SOURCES_FLAGS = -d:FEATURE_PAL,PFX_LEGACY_3_5 -d:MONO
+LIB_MCS_FLAGS = $(REFERENCE_SOURCES_FLAGS) $(RESOURCE_FILES:%=-resource:%)
+
 #LIBRARY_USE_INTERMEDIATE_FILE = yes
 
 ifeq (2, $(FRAMEWORK_VERSION_MAJOR))
@@ -22,6 +25,7 @@ LIBRARY_COMPILE = $(BOOT_COMPILE)
 LIBRARY_INSTALL_DIR = $(mono_libdir)/mono/$(FRAMEWORK_VERSION)
 
 RESOURCE_FILES = \
+	resources/charinfo.nlp \
 	resources/collation.core.bin \
 	resources/collation.tailoring.bin \
 	resources/collation.cjkCHS.bin \
@@ -30,8 +34,8 @@ RESOURCE_FILES = \
 	resources/collation.cjkKO.bin \
 	resources/collation.cjkKOlv2.bin
 
-REFERENCE_SOURCES_FLAGS = -d:FEATURE_PAL
-LOCAL_MCS_FLAGS = -unsafe -nostdlib -nowarn:612,618 -d:INSIDE_CORLIB -d:LIBC $(REFERENCE_SOURCES_FLAGS)
+REFERENCE_SOURCES_FLAGS = -d:FEATURE_PAL,GENERICS_WORK,FEATURE_LIST_PREDICATES,FEATURE_SERIALIZATION
+LOCAL_MCS_FLAGS = -unsafe -nostdlib -nowarn:612,618 -d:INSIDE_CORLIB,MONO_CULTURE_DATA -d:LIBC $(REFERENCE_SOURCES_FLAGS)
 DEFAULT_REFERENCES =
 
 # System.IO/DirectoryInfoTest.cs needs Mono.Posix

@@ -1062,8 +1062,11 @@ namespace Mono.CSharp {
 			return effective_base = Convert.FindMostEncompassedType (types);
 		}
 
-		public override string GetSignatureForDocumentation ()
+		public override string GetSignatureForDocumentation (bool explicitName)
 		{
+			if (explicitName)
+				return Name;
+
 			var prefix = IsMethodOwned ? "``" : "`";
 			return prefix + DeclaredPosition;
 		}
@@ -3216,7 +3219,7 @@ namespace Mono.CSharp {
 							continue;
 
 						if (!applicable[cii])
-							break;
+							continue;
 
 						//
 						// For each exact bound U of Xi all types Uj which are not identical
@@ -3233,7 +3236,7 @@ namespace Mono.CSharp {
 							continue;
 
 						if (!applicable[cii])
-							break;
+							continue;
 
 						//
 						// For each lower bound U of Xi all types Uj to which there is not an implicit conversion
@@ -3252,7 +3255,7 @@ namespace Mono.CSharp {
 							continue;
 
 						if (!applicable[cii])
-							break;
+							continue;
 
 						//
 						// For each upper bound U of Xi all types Uj from which there is not an implicit conversion

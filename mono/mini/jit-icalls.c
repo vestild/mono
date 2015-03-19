@@ -33,6 +33,7 @@ mono_ldftn (MonoMethod *method)
 static void*
 ldvirtfn_internal (MonoObject *obj, MonoMethod *method, gboolean gshared)
 {
+	MonoError error;
 	MonoMethod *res;
 
 	MONO_ARCH_SAVE_REGS;
@@ -51,7 +52,8 @@ ldvirtfn_internal (MonoObject *obj, MonoMethod *method, gboolean gshared)
 			context.class_inst = res->klass->generic_container->context.class_inst;
 		context.method_inst = mono_method_get_context (method)->method_inst;
 
-		res = mono_class_inflate_generic_method (res, &context);
+		res = mono_class_inflate_generic_method_checked (res, &context, &error);
+		mono_error_raise_exception (&error);
 	}
 
 	/* An rgctx wrapper is added by the trampolines no need to do it here */
@@ -825,11 +827,13 @@ mono_class_static_field_address (MonoDomain *domain, MonoClassField *field)
 gpointer
 mono_ldtoken_wrapper (MonoImage *image, int token, MonoGenericContext *context)
 {
+	MonoError error;
 	MonoClass *handle_class;
 	gpointer res;
 
 	MONO_ARCH_SAVE_REGS;
-	res = mono_ldtoken (image, token, &handle_class, context);	
+	res = mono_ldtoken_checked (image, token, &handle_class, context, &error);
+	mono_error_raise_exception (&error);
 	mono_class_init (handle_class);
 
 	return res;
@@ -933,6 +937,39 @@ mono_fconv_ovf_u8 (double v)
 		mono_raise_exception (mono_get_exception_overflow ());
 	}
 #endif
+	return res;
+}
+
+#ifdef MONO_ARCH_EMULATE_FCONV_TO_I8
+gint64
+mono_rconv_i8 (float v)
+{
+	return (gint64)v;
+}
+#endif
+
+gint64
+mono_rconv_ovf_i8 (float v)
+{
+	gint64 res;
+
+	res = (gint64)v;
+
+	if (isnan(v) || trunc (v) != res) {
+		mono_raise_exception (mono_get_exception_overflow ());
+	}
+	return res;
+}
+
+guint64
+mono_rconv_ovf_u8 (float v)
+{
+	guint64 res;
+
+	res = (guint64)v;
+	if (isnan(v) || trunc (v) != res) {
+		mono_raise_exception (mono_get_exception_overflow ());
+	}
 	return res;
 }
 
@@ -1189,6 +1226,8 @@ constrained_gsharedvt_call_setup (gpointer mp, MonoMethod *cmethod, MonoClass *k
 			vt_slot += iface_offset;
 		}
 		m = klass->vtable [vt_slot];
+		if (cmethod->is_inflated)
+			m = mono_class_inflate_generic_method (m, mono_method_get_context (cmethod));
 	}
 	if (klass->valuetype && (m->klass == mono_defaults.object_class || m->klass == mono_defaults.enum_class->parent || m->klass == mono_defaults.enum_class))
 		/*

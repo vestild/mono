@@ -561,7 +561,11 @@ struct _MonoDynamicGenericClass {
  * A type parameter.
  */
 struct _MonoGenericParam {
-	MonoGenericContainer *owner;	/* Type or method this parameter was defined in. */
+	/*
+	 * Type or method this parameter was defined in.
+	 * If this is non-null, this is a MonoGenericParamFull structure.
+	 */
+	MonoGenericContainer *owner;
 	guint16 num;
 	/* For internal runtime use, used to make different versions of the same param */
 	guint16 serial;
@@ -1027,6 +1031,9 @@ mono_class_inflate_generic_method_full (MonoMethod *method, MonoClass *klass_hin
 MonoMethod*
 mono_class_inflate_generic_method_full_checked (MonoMethod *method, MonoClass *klass_hint, MonoGenericContext *context, MonoError *error) MONO_INTERNAL;
 
+MonoMethod *
+mono_class_inflate_generic_method_checked (MonoMethod *method, MonoGenericContext *context, MonoError *error) MONO_INTERNAL;
+
 MonoMethodInflated*
 mono_method_inflated_lookup (MonoMethodInflated* method, gboolean cache) MONO_INTERNAL;
 
@@ -1398,5 +1405,8 @@ mono_class_from_name_case_checked (MonoImage *image, const char* name_space, con
 
 MonoClassField*
 mono_field_from_token_checked (MonoImage *image, uint32_t token, MonoClass **retklass, MonoGenericContext *context, MonoError *error) MONO_INTERNAL;
+
+gpointer
+mono_ldtoken_checked (MonoImage *image, guint32 token, MonoClass **handle_class, MonoGenericContext *context, MonoError *error) MONO_INTERNAL;
 
 #endif /* __MONO_METADATA_CLASS_INTERBALS_H__ */

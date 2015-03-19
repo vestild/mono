@@ -15,7 +15,6 @@
 #endif
 #include <stdlib.h>
 #include <stdio.h>
-#include <signal.h>
 #include <string.h>
 #include <mono/metadata/mono-endian.h>
 #include <mono/metadata/tabledefs.h>
@@ -986,7 +985,7 @@ mono_class_compute_gc_descriptor (MonoClass *class)
 		class->gc_descr = (gpointer)mono_gc_make_descr_for_string (bitmap, 2);
 	} else if (class->rank) {
 		mono_class_compute_gc_descriptor (class->element_class);
-		if (!class->element_class->valuetype) {
+		if (MONO_TYPE_IS_REFERENCE (&class->element_class->byval_arg)) {
 			gsize abm = 1;
 			class->gc_descr = mono_gc_make_descr_for_array (class->byval_arg.type == MONO_TYPE_SZARRAY, &abm, 1, sizeof (gpointer));
 			/*printf ("new array descriptor: 0x%x for %s.%s\n", class->gc_descr,
@@ -2796,8 +2795,10 @@ mono_object_get_virtual_method (MonoObject *obj, MonoMethod *method)
 #endif
 	{
 		if (method->is_inflated) {
+			MonoError error;
 			/* Have to inflate the result */
-			res = mono_class_inflate_generic_method (res, &((MonoMethodInflated*)method)->context);
+			res = mono_class_inflate_generic_method_checked (res, &((MonoMethodInflated*)method)->context, &error);
+			g_assert (mono_error_ok (&error)); /* FIXME don't swallow the error */
 		}
 	}
 
@@ -3255,7 +3256,7 @@ mono_field_get_value_object (MonoDomain *domain, MonoClassField *field, MonoObje
 		}
 
 		/* MONO_TYPE_PTR is passed by value to runtime_invoke () */
-		args [0] = *ptr;
+		args [0] = ptr ? *ptr : NULL;
 		args [1] = mono_type_get_object (mono_domain_get (), type);
 
 		return mono_runtime_invoke (m, NULL, args, NULL);

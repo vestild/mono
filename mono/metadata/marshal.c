@@ -631,7 +631,7 @@ mono_free_lparray (MonoArray *array, gpointer* nativeArray)
 	switch (klass->element_class->byval_arg.type) {
 		case MONO_TYPE_CLASS:
 			for(i = 0; i < array->max_length; ++i) 	
-				mono_marshal_free_ccw(nativeArray[i]);
+				mono_marshal_free_ccw (mono_array_get (array, MonoObject*, i));
 			free(nativeArray);
 		break;
 	}		
@@ -2460,14 +2460,18 @@ mono_marshal_method_from_wrapper (MonoMethod *wrapper)
 		res = mono_marshal_get_wrapper_info (wrapper);
 		if (res == NULL)
 			return wrapper;
-		if (wrapper->is_inflated)
+		if (wrapper->is_inflated) {
+			MonoError error;
+			MonoMethod *result;
 			/*
 			 * A method cannot be inflated and a wrapper at the same time, so the wrapper info
 			 * contains an uninflated method.
 			 */
-			return mono_class_inflate_generic_method (res, mono_method_get_context (wrapper));
-		else
-			return res;
+			result = mono_class_inflate_generic_method_checked (res, mono_method_get_context (wrapper), &error);
+			g_assert (mono_error_ok (&error)); /* FIXME don't swallow the error */
+			return result;
+		}
+		return res;
 	case MONO_WRAPPER_MANAGED_TO_NATIVE:
 		info = mono_marshal_get_wrapper_info (wrapper);
 		if (info && (info->subtype == WRAPPER_SUBTYPE_NONE || info->subtype == WRAPPER_SUBTYPE_NATIVE_FUNC_AOT || info->subtype == WRAPPER_SUBTYPE_PINVOKE))
@@ -2600,7 +2604,9 @@ check_generic_wrapper_cache (GHashTable *cache, MonoMethod *orig_method, gpointe
 	 */
 	def = mono_marshal_find_in_cache (cache, def_key);
 	if (def) {
-		inst = mono_class_inflate_generic_method (def, ctx);
+		MonoError error;
+		inst = mono_class_inflate_generic_method_checked (def, ctx, &error);
+		g_assert (mono_error_ok (&error)); /* FIXME don't swallow the error */
 		/* Cache it */
 		mono_memory_barrier ();
 		mono_marshal_lock ();
@@ -2618,12 +2624,14 @@ check_generic_wrapper_cache (GHashTable *cache, MonoMethod *orig_method, gpointe
 static MonoMethod*
 cache_generic_wrapper (GHashTable *cache, MonoMethod *orig_method, MonoMethod *def, MonoGenericContext *ctx, gpointer key)
 {
+	MonoError error;
 	MonoMethod *inst, *res;
 
 	/*
 	 * We use the same cache for the generic definition and the instances.
 	 */
-	inst = mono_class_inflate_generic_method (def, ctx);
+	inst = mono_class_inflate_generic_method_checked (def, ctx, &error);
+	g_assert (mono_error_ok (&error)); /* FIXME don't swallow the error */
 	mono_memory_barrier ();
 	mono_marshal_lock ();
 	res = g_hash_table_lookup (cache, key);
@@ -2638,6 +2646,7 @@ cache_generic_wrapper (GHashTable *cache, MonoMethod *orig_method, MonoMethod *d
 static MonoMethod*
 check_generic_delegate_wrapper_cache (GHashTable *cache, MonoMethod *orig_method, MonoMethod *def_method, MonoGenericContext *ctx)
 {
+	MonoError error;
 	MonoMethod *res;
 	MonoMethod *inst, *def;
 
@@ -2653,7 +2662,9 @@ check_generic_delegate_wrapper_cache (GHashTable *cache, MonoMethod *orig_method
 	 */
 	def = mono_marshal_find_in_cache (cache, def_method->klass);
 	if (def) {
-		inst = mono_class_inflate_generic_method (def, ctx);
+		inst = mono_class_inflate_generic_method_checked (def, ctx, &error);
+		g_assert (mono_error_ok (&error)); /* FIXME don't swallow the error */
+
 		/* Cache it */
 		mono_memory_barrier ();
 		mono_marshal_lock ();
@@ -2671,12 +2682,15 @@ check_generic_delegate_wrapper_cache (GHashTable *cache, MonoMethod *orig_method
 static MonoMethod*
 cache_generic_delegate_wrapper (GHashTable *cache, MonoMethod *orig_method, MonoMethod *def, MonoGenericContext *ctx)
 {
+	MonoError error;
 	MonoMethod *inst, *res;
 
 	/*
 	 * We use the same cache for the generic definition and the instances.
 	 */
-	inst = mono_class_inflate_generic_method (def, ctx);
+	inst = mono_class_inflate_generic_method_checked (def, ctx, &error);
+	g_assert (mono_error_ok (&error)); /* FIXME don't swallow the error */
+
 	mono_memory_barrier ();
 	mono_marshal_lock ();
 	res = g_hash_table_lookup (cache, orig_method->klass);
@@ -2979,34 +2993,34 @@ mono_marshal_get_delegate_end_invoke (MonoMethod *method)
 typedef struct
 {
 	MonoMethodSignature *sig;
-	MonoMethod *method;
-} SignatureMethodPair;
+	gpointer pointer;
+} SignaturePointerPair;
 
 static guint
-signature_method_pair_hash (gconstpointer data)
+signature_pointer_pair_hash (gconstpointer data)
 {
-	SignatureMethodPair *pair = (SignatureMethodPair*)data;
+	SignaturePointerPair *pair = (SignaturePointerPair*)data;
 
-	return mono_signature_hash (pair->sig) ^ mono_aligned_addr_hash (pair->method);
+	return mono_signature_hash (pair->sig) ^ mono_aligned_addr_hash (pair->pointer);
 }
 
 static gboolean
-signature_method_pair_equal (SignatureMethodPair *pair1, SignatureMethodPair *pair2)
+signature_pointer_pair_equal (gconstpointer data1, gconstpointer data2)
 {
-	return mono_metadata_signature_equal (pair1->sig, pair2->sig) && (pair1->method == pair2->method);
+	SignaturePointerPair *pair1 = (SignaturePointerPair*) data1, *pair2 = (SignaturePointerPair*) data2;
+	return mono_metadata_signature_equal (pair1->sig, pair2->sig) && (pair1->pointer == pair2->pointer);
 }
 
 static gboolean
-signature_method_pair_matches_method (gpointer key, gpointer value, gpointer user_data)
+signature_pointer_pair_matches_pointer (gpointer key, gpointer value, gpointer user_data)
 {
-	SignatureMethodPair *pair = (SignatureMethodPair*)key;
-	MonoMethod *method = (MonoMethod*)user_data;
+	SignaturePointerPair *pair = (SignaturePointerPair*)key;
 
-	return pair->method == method;
+	return pair->pointer == user_data;
 }
 
 static void
-free_signature_method_pair (SignatureMethodPair *pair)
+free_signature_pointer_pair (SignaturePointerPair *pair)
 {
 	g_free (pair);
 }
@@ -3020,8 +3034,8 @@ mono_marshal_get_delegate_invoke_internal (MonoMethod *method, gboolean callvirt
 	MonoMethod *res;
 	GHashTable *cache;
 	gpointer cache_key = NULL;
-	SignatureMethodPair key;
-	SignatureMethodPair *new_key;
+	SignaturePointerPair key;
+	SignaturePointerPair *new_key;
 	int local_prev, local_target;
 	int pos0;
 	char *name;
@@ -3110,10 +3124,10 @@ mono_marshal_get_delegate_invoke_internal (MonoMethod *method, gboolean callvirt
 		/* We need to cache the signature+method pair */
 		mono_marshal_lock ();
 		if (!*cache_ptr)
-			*cache_ptr = g_hash_table_new_full (signature_method_pair_hash, (GEqualFunc)signature_method_pair_equal, (GDestroyNotify)free_signature_method_pair, NULL);
+			*cache_ptr = g_hash_table_new_full (signature_pointer_pair_hash, (GEqualFunc)signature_pointer_pair_equal, (GDestroyNotify)free_signature_pointer_pair, NULL);
 		cache = *cache_ptr;
 		key.sig = invoke_sig;
-		key.method = target_method;
+		key.pointer = target_method;
 		res = g_hash_table_lookup (cache, &key);
 		mono_marshal_unlock ();
 		if (res)
@@ -3181,10 +3195,13 @@ mono_marshal_get_delegate_invoke_internal (MonoMethod *method, gboolean callvirt
 	mono_mb_emit_ldloc (mb, local_prev);
 	for (i = 0; i < sig->param_count; i++)
 		mono_mb_emit_ldarg (mb, i + 1);
-	if (ctx)
-		mono_mb_emit_op (mb, CEE_CALLVIRT, mono_class_inflate_generic_method (method, &container->context));
-	else
+	if (ctx) {
+		MonoError error;
+		mono_mb_emit_op (mb, CEE_CALLVIRT, mono_class_inflate_generic_method_checked (method, &container->context, &error));
+		g_assert (mono_error_ok (&error)); /* FIXME don't swallow the error */
+	} else {
 		mono_mb_emit_op (mb, CEE_CALLVIRT, method);
+	}
 	if (sig->ret->type != MONO_TYPE_VOID)
 		mono_mb_emit_byte (mb, CEE_POP);
 
@@ -3261,7 +3278,7 @@ mono_marshal_get_delegate_invoke_internal (MonoMethod *method, gboolean callvirt
 		def = mono_mb_create_and_cache (cache, cache_key, mb, sig, sig->param_count + 16);
 		res = cache_generic_delegate_wrapper (cache, orig_method, def, ctx);
 	} else if (callvirt) {
-		new_key = g_new0 (SignatureMethodPair, 1);
+		new_key = g_new0 (SignaturePointerPair, 1);
 		*new_key = key;
 
 		info = mono_wrapper_info_create (mb, subtype);
@@ -7351,13 +7368,18 @@ mono_marshal_get_native_func_wrapper (MonoImage *image, MonoMethodSignature *sig
 {
 	MonoMethodSignature *csig;
 
+	SignaturePointerPair key, *new_key;
 	MonoMethodBuilder *mb;
 	MonoMethod *res;
 	GHashTable *cache;
+	gboolean found;
 	char *name;
 
-	cache = get_cache (&image->native_wrapper_cache, mono_aligned_addr_hash, NULL);
-	if ((res = mono_marshal_find_in_cache (cache, func)))
+	key.sig = sig;
+	key.pointer = func;
+
+	cache = get_cache (&image->native_func_wrapper_cache, signature_pointer_pair_hash, signature_pointer_pair_equal);
+	if ((res = mono_marshal_find_in_cache (cache, &key)))
 		return res;
 
 	name = g_strdup_printf ("wrapper_native_%p", func);
@@ -7370,8 +7392,15 @@ mono_marshal_get_native_func_wrapper (MonoImage *image, MonoMethodSignature *sig
 
 	csig = signature_dup (image, sig);
 	csig->pinvoke = 0;
-	res = mono_mb_create_and_cache (cache, func,
-									mb, csig, csig->param_count + 16);
+
+	new_key = g_new (SignaturePointerPair,1);
+	new_key->sig = csig;
+	new_key->pointer = func;
+
+	res = mono_mb_create_and_cache_full (cache, new_key, mb, csig, csig->param_count + 16, NULL, &found);
+	if (found)
+		g_free (new_key);
+
 	mono_mb_free (mb);
 
 	mono_marshal_set_wrapper_info (res, NULL);
@@ -8544,8 +8573,11 @@ mono_marshal_get_synchronized_inner_wrapper (MonoMethod *method)
 	info->d.synchronized_inner.method = method;
 	res = mono_mb_create (mb, sig, 0, info);
 	mono_mb_free (mb);
-	if (ctx)
-		res = mono_class_inflate_generic_method (res, ctx);
+	if (ctx) {
+		MonoError error;
+		res = mono_class_inflate_generic_method_checked (res, ctx, &error);
+		g_assert (mono_error_ok (&error)); /* FIXME don't swallow the error */
+	}
 	return res;
 }
 
@@ -8686,10 +8718,13 @@ mono_marshal_get_synchronized_wrapper (MonoMethod *method)
 	for (i = 0; i < sig->param_count; i++)
 		mono_mb_emit_ldarg (mb, i + (sig->hasthis == TRUE));
 
-	if (ctx)
-		mono_mb_emit_managed_call (mb, mono_class_inflate_generic_method (method, &container->context), NULL);
-	else
+	if (ctx) {
+		MonoError error;
+		mono_mb_emit_managed_call (mb, mono_class_inflate_generic_method_checked (method, &container->context, &error), NULL);
+		g_assert (mono_error_ok (&error)); /* FIXME don't swallow the error */
+	} else {
 		mono_mb_emit_managed_call (mb, method, NULL);
+	}
 
 	if (!MONO_TYPE_IS_VOID (sig->ret))
 		mono_mb_emit_stloc (mb, ret_local);
@@ -9711,10 +9746,13 @@ mono_marshal_get_array_accessor_wrapper (MonoMethod *method)
 	for (i = 0; i < sig->param_count; i++)
 		mono_mb_emit_ldarg (mb, i + (sig->hasthis == TRUE));
 
-	if (ctx)
-		mono_mb_emit_managed_call (mb, mono_class_inflate_generic_method (method, &container->context), NULL);
-	else
+	if (ctx) {
+		MonoError error;
+		mono_mb_emit_managed_call (mb, mono_class_inflate_generic_method_checked (method, &container->context, &error), NULL);
+		g_assert (mono_error_ok (&error)); /* FIXME don't swallow the error */
+	} else {
 		mono_mb_emit_managed_call (mb, method, NULL);
+	}
 	mono_mb_emit_byte (mb, CEE_RET);
 #endif
 
@@ -11101,7 +11139,7 @@ mono_marshal_free_dynamic_wrappers (MonoMethod *method)
 	if (image->runtime_invoke_direct_cache)
 		g_hash_table_remove (image->runtime_invoke_direct_cache, method);
 	if (image->delegate_abstract_invoke_cache)
-		g_hash_table_foreach_remove (image->delegate_abstract_invoke_cache, signature_method_pair_matches_method, method);
+		g_hash_table_foreach_remove (image->delegate_abstract_invoke_cache, signature_pointer_pair_matches_pointer, method);
 	// FIXME: Need to clear the caches in other images as well
 	if (image->delegate_bound_static_invoke_cache)
 		g_hash_table_remove (image->delegate_bound_static_invoke_cache, mono_method_signature (method));
@@ -11111,9 +11149,9 @@ mono_marshal_free_dynamic_wrappers (MonoMethod *method)
 }
 
 static gboolean
-signature_method_pair_matches_signature (gpointer key, gpointer value, gpointer user_data)
+signature_pointer_pair_matches_signature (gpointer key, gpointer value, gpointer user_data)
 {
-       SignatureMethodPair *pair = (SignatureMethodPair*)key;
+       SignaturePointerPair *pair = (SignaturePointerPair*)key;
        MonoMethodSignature *sig = (MonoMethodSignature*)user_data;
 
        return mono_metadata_signature_equal (pair->sig, sig);
@@ -11157,11 +11195,11 @@ mono_marshal_free_inflated_wrappers (MonoMethod *method)
                g_hash_table_remove (method->klass->image->runtime_invoke_vtype_cache, sig);
 
         /*
-         * indexed by SignatureMethodPair
+         * indexed by SignaturePointerPair
          */
        if (sig && method->klass->image->delegate_abstract_invoke_cache)
                g_hash_table_foreach_remove (method->klass->image->delegate_abstract_invoke_cache,
-                                            signature_method_pair_matches_signature, (gpointer)sig);
+                                            signature_pointer_pair_matches_signature, (gpointer)sig);
 
         /*
          * indexed by MonoMethod pointers
